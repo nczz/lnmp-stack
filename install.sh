@@ -130,6 +130,14 @@ verify_php() {
     [[ -f /usr/local/php/etc/php-fpm.conf ]]
 }
 
+db_label() {
+    [[ "${DB_Type}" = 'mariadb' ]] && echo "MariaDB" || echo "MySQL"
+}
+
+db_version() {
+    [[ "${DB_Type}" = 'mariadb' ]] && echo "${MARIADB_VER}" || echo "${MYSQL_VER}"
+}
+
 # Install based on target
 case "$INSTALL_TARGET" in
     lnmp)
@@ -143,11 +151,11 @@ case "$INSTALL_TARGET" in
         fi
 
         if step_done mysql; then
-            log_ok "[3/7] MySQL — already installed, skipping."
+            log_ok "[3/7] $(db_label) — already installed, skipping."
         else
-            log_info "[3/7] Installing MySQL ${MYSQL_VER}..."
+            log_info "[3/7] Installing $(db_label) $(db_version)..."
             install_mysql
-            verify_step "MySQL" verify_mysql
+            verify_step "$(db_label)" verify_mysql
             mark_step mysql
         fi
 
@@ -175,9 +183,9 @@ case "$INSTALL_TARGET" in
         verify_step "Nginx" verify_nginx
         ;;
     db)
-        log_info "[2/2] Installing MySQL ${MYSQL_VER}..."
+        log_info "[2/2] Installing $(db_label) $(db_version)..."
         install_mysql
-        verify_step "MySQL" verify_mysql
+        verify_step "$(db_label)" verify_mysql
         ;;
 esac
 
@@ -228,12 +236,12 @@ echo "|          Installation Complete!                    |"
 echo "+---------------------------------------------------+"
 echo "  Time elapsed: ${MINUTES}m ${SECONDS_REMAIN}s"
 echo "  Nginx: /usr/local/nginx/"
-[[ "$INSTALL_TARGET" != 'nginx' ]] && echo "  MySQL: /usr/local/mysql/"
+[[ "$INSTALL_TARGET" != 'nginx' ]] && echo "  $(db_label): /usr/local/mysql/"
 [[ "$INSTALL_TARGET" = 'lnmp' ]] && echo "  PHP:   /usr/local/php/"
 echo "  Web root: ${Default_Website_Dir:-/home/wwwroot/default}"
 echo "  Logs: /home/wwwlogs/"
 echo "  Install log: ${LOG_FILE}"
-[[ -f /root/.my.cnf ]] && echo "  MySQL root password: /root/.my.cnf"
+[[ -f /root/.my.cnf ]] && echo "  Database root password: /root/.my.cnf"
 command -v docker &>/dev/null && echo "  Docker: $(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',')"
 [[ -x /usr/local/bin/composer ]] && echo "  Composer: $(composer --version 2>/dev/null | awk '{print $3}')"
 [[ -x /usr/local/bin/wp ]] && echo "  WP-CLI: $(wp --version 2>/dev/null)"

@@ -39,8 +39,8 @@ clear error instead of installing an incompatible binary.
 | Software | Version | Install Method |
 |----------|---------|----------------|
 | Nginx | 1.30.3 | Compile (with OpenSSL 3.5.7) |
-| MySQL | 8.4.9 LTS | Binary |
-| MariaDB | 11.4.5 LTS | Binary (alternative) |
+| MariaDB | 11.4.5 LTS | Binary (default) |
+| MySQL | 8.4.9 LTS | Binary (not supported on Ubuntu 26.04) |
 | PHP | 8.4.22 | Compile |
 | Redis | 7.4.2 | Compile (optional) |
 | Docker | Latest | Official script (get.docker.com) |
@@ -81,10 +81,16 @@ Load order: `versions.conf` → `lnmp.conf` (defaults) → `lnmp.conf.local` (yo
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `DB_Type` | `mysql` | Database engine: `mysql` or `mariadb` |
+| `DB_Type` | `mariadb` | Database engine: `mariadb` or `mysql` |
 | `MySQL_Data_Dir` | `/usr/local/mysql/var` | MySQL data directory |
 | `MariaDB_Data_Dir` | `/usr/local/mariadb/var` | MariaDB data directory |
 | `MySQL_Root_Password` | (auto-generated) | Root password. If not set, a random one is generated and saved to `.local` |
+
+On Ubuntu 26.04, `DB_Type='mysql'` is blocked by default because Oracle's
+official MySQL 8.4 binary client tools still require `libncurses.so.5` and
+`libtinfo.so.5`, which are not available from Ubuntu 26.04 repositories. Use
+the default `DB_Type='mariadb'` for Ubuntu 26.04. MySQL remains available for
+older supported Ubuntu releases where its binary dependencies can be satisfied.
 
 ### Nginx
 

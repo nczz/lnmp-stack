@@ -3,6 +3,7 @@
 
 install_mysql() {
     _check_db_arch_support
+    _check_db_os_support
 
     if [[ "${DB_Type}" = 'mariadb' ]]; then
         _install_mariadb
@@ -15,6 +16,28 @@ _check_db_arch_support() {
     [[ "${ARCH}" = "x86_64" ]] && return 0
 
     die "Database binary install is currently supported only on x86_64. Detected ${ARCH}; use x86_64 Ubuntu Server for lnmp/db targets, or run the nginx target only."
+}
+
+_check_db_os_support() {
+    local ver_num="${OS_VER/./}"
+    [[ "${DB_Type}" = 'mysql' && "$ver_num" -ge 2604 ]] || return 0
+
+    local msg="MySQL ${MYSQL_VER} official binary client tools require libncurses.so.5/libtinfo.so.5, which Ubuntu ${OS_VER} does not provide. Use DB_Type='mariadb' on Ubuntu 26.04, or run MySQL on an older supported Ubuntu release."
+    if [[ "${Auto_Install:-n}" = 'y' ]]; then
+        die "$msg"
+    fi
+
+    log_warn "$msg"
+    read -r -p "Switch DB_Type to 'mariadb' for this installation? [y/N] " reply
+    case "$reply" in
+        y|Y|yes|YES)
+            DB_Type='mariadb'
+            log_info "Using MariaDB ${MARIADB_VER} for this installation."
+            ;;
+        *)
+            die "MySQL on Ubuntu ${OS_VER} was not approved; aborting before installing an incompatible database binary."
+            ;;
+    esac
 }
 
 # Fix shared library issues for MySQL binary package on Ubuntu 24.04+
@@ -88,6 +111,8 @@ _install_mysql() {
 
     # Verify shared libraries before proceeding
     _verify_mysql_libs /usr/local/mysql/bin/mysqld
+    _verify_mysql_libs /usr/local/mysql/bin/mysql
+    _verify_mysql_libs /usr/local/mysql/bin/mysqladmin
 
     # Generate my.cnf from template
     _deploy_mysql_conf "$db_dir"

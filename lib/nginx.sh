@@ -47,6 +47,7 @@ install_nginx() {
         cd "${cur_dir}/src" && tar_cd "openssl-${OPENSSL_VER}.tar.gz" "openssl-${OPENSSL_VER}"
         cd "${cur_dir}/src/nginx-${NGINX_VER}"
         nginx_configure_args+=( "--with-openssl=${cur_dir}/src/openssl-${OPENSSL_VER}" )
+        nginx_configure_args+=( "--with-openssl-opt=no-shared no-threads no-tests" )
         nginx_configure_args+=( --with-http_v3_module )
     fi
 
