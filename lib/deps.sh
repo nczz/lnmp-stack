@@ -7,7 +7,7 @@ install_deps() {
     wait_apt_lock
 
     log_info "Updating package index..."
-    apt-get update -y -qq
+    apt-get -qq update
 
     # Core packages that work across 22.04 / 24.04 / 26.04
     local pkgs=(
