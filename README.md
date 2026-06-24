@@ -259,9 +259,10 @@ sudo ./tools/addons.sh install redis-server
 sudo ./tools/addons.sh install memcached-server
 ```
 
-OPcache is compiled and enabled by default. OPcache JIT is intentionally
-disabled by default (`opcache.jit_buffer_size=0`, `opcache.jit=off`) because it
-can trigger runtime bugs on some workloads and PHP extension combinations.
+OPcache is compiled and enabled by default. OPcache JIT is intentionally left
+commented out in `opcache.ini` because it can trigger runtime bugs on some
+workloads and PHP extension combinations. Uncomment `opcache.jit_buffer_size`
+and `opcache.jit` only after validating the workload with JIT.
 
 ## Additional Tools
 

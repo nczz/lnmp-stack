@@ -75,6 +75,7 @@ vhost_add() {
     cat > "$conf_file" <<EOF
 server {
     listen 80;
+    # listen [::]:80;
     server_name ${server_names};
     root ${webroot};
     index index.html index.htm index.php;

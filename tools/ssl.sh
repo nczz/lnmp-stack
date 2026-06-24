@@ -215,6 +215,7 @@ _apply_ssl_vhost() {
 
 server {
     listen 443 ssl;
+    # listen [::]:443 ssl;
     http2 on;
     server_name ${server_names};
     root ${webroot};

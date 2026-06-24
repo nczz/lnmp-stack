@@ -121,8 +121,9 @@ opcache.revalidate_freq=60
 opcache.save_comments=1
 ; JIT is disabled by default because it can trigger runtime bugs on some
 ; workloads and PHP extension combinations. OPcache itself remains enabled.
-opcache.jit_buffer_size=0
-opcache.jit=off
+; Uncomment both lines below only when the workload has been validated with JIT.
+; opcache.jit_buffer_size=64M
+; opcache.jit=1255
 EOF
 }
 
