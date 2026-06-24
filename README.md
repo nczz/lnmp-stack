@@ -7,7 +7,7 @@ All software compiled from source or installed via official binaries — no thir
 ## Features
 
 - **Ubuntu-only** — Supports Ubuntu 26.04 LTS (recommended), 24.04 LTS, and 22.04 LTS
-- **Compile from source** — Nginx with latest OpenSSL (HTTP/2, HTTP/3, TLS 1.3), PHP 8.4 with OPcache JIT
+- **Compile from source** — Nginx with latest OpenSSL (HTTP/2, HTTP/3, TLS 1.3), PHP 8.4 with OPcache enabled and JIT disabled by default
 - **Auto-tuning** — Nginx workers, file cache, MySQL InnoDB buffer pool, PHP-FPM children automatically calculated based on host CPU/RAM
 - **System hardening** — TCP BBR, sysctl tuning, journald log limits, swap auto-creation
 - **Timezone unified** — Single `Timezone` setting applied across system, PHP, and MySQL
@@ -259,7 +259,9 @@ sudo ./tools/addons.sh install redis-server
 sudo ./tools/addons.sh install memcached-server
 ```
 
-OPcache with JIT is a PHP built-in module, always compiled and enabled.
+OPcache is compiled and enabled by default. OPcache JIT is intentionally
+disabled by default (`opcache.jit_buffer_size=0`, `opcache.jit=off`) because it
+can trigger runtime bugs on some workloads and PHP extension combinations.
 
 ## Additional Tools
 

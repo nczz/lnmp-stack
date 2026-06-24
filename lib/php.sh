@@ -119,8 +119,10 @@ opcache.interned_strings_buffer=16
 opcache.max_accelerated_files=10000
 opcache.revalidate_freq=60
 opcache.save_comments=1
-opcache.jit_buffer_size=64M
-opcache.jit=1255
+; JIT is disabled by default because it can trigger runtime bugs on some
+; workloads and PHP extension combinations. OPcache itself remains enabled.
+opcache.jit_buffer_size=0
+opcache.jit=off
 EOF
 }
 
