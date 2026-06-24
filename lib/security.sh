@@ -58,7 +58,7 @@ _harden_nginx() {
 _install_fail2ban() {
     log_info "Installing fail2ban..."
     wait_apt_lock
-    apt-get install -y fail2ban 2>&1 | tee -a "$LOG_FILE"
+    apt-get -y install fail2ban 2>&1 | tee -a "$LOG_FILE"
     [[ ${PIPESTATUS[0]} -eq 0 ]] || { _confirm_skip_optional_feature "fail2ban" "Enable_Fail2ban='n'"; return 0; }
 
     cat > /etc/fail2ban/jail.local <<'EOF'
@@ -88,7 +88,7 @@ EOF
 _setup_ufw() {
     log_info "Configuring UFW firewall..."
     wait_apt_lock
-    apt-get install -y ufw 2>&1 | tee -a "$LOG_FILE"
+    apt-get -y install ufw 2>&1 | tee -a "$LOG_FILE"
     [[ ${PIPESTATUS[0]} -eq 0 ]] || { _confirm_skip_optional_feature "UFW firewall" "Firewall='n'"; return 0; }
 
     ufw default deny incoming
@@ -104,7 +104,7 @@ _setup_ufw() {
 _setup_iptables() {
     log_info "Configuring iptables firewall..."
     wait_apt_lock
-    apt-get install -y iptables-persistent 2>&1 | tee -a "$LOG_FILE"
+    apt-get -y install iptables-persistent 2>&1 | tee -a "$LOG_FILE"
     [[ ${PIPESTATUS[0]} -eq 0 ]] || { _confirm_skip_optional_feature "iptables firewall" "Firewall='n'"; return 0; }
 
     # Flush

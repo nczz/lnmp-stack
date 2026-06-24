@@ -56,7 +56,7 @@ _fix_mysql_libs() {
     elif apt-cache show libaio1 &>/dev/null 2>&1; then
         lib_pkgs+=( libaio1 )
     fi
-    apt-get install -y "${lib_pkgs[@]}" 2>&1 | tee -a "$LOG_FILE"
+    apt-get -y install "${lib_pkgs[@]}" 2>&1 | tee -a "$LOG_FILE"
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Failed to install MySQL runtime libraries"
 
     # MySQL 8.4 binary expects libaio.so.1 — create symlink if only t64 variant exists

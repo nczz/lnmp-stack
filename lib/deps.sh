@@ -68,7 +68,7 @@ install_deps() {
     fi
 
     log_info "Installing system packages (this may take a few minutes)..."
-    apt-get install -y --no-install-recommends "${pkgs[@]}" 2>&1 | tee -a "$LOG_FILE"
+    apt-get -y install --no-install-recommends "${pkgs[@]}" 2>&1 | tee -a "$LOG_FILE"
 
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Failed to install dependencies"
     log_ok "Dependencies installed."
@@ -177,7 +177,7 @@ install_docker() {
 
     # Docker Compose plugin (included in modern docker)
     if ! docker compose version &>/dev/null; then
-        apt-get install -y docker-compose-plugin 2>&1 | tee -a "$LOG_FILE"
+        apt-get -y install docker-compose-plugin 2>&1 | tee -a "$LOG_FILE"
     fi
 
     log_ok "Docker $(docker --version | awk '{print $3}') installed."

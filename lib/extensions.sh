@@ -75,7 +75,7 @@ install_extension() {
     local deps="${EXT_DEPS[$ext]}"
     if [[ -n "$deps" ]]; then
         log_info "Installing dependencies: ${deps}"
-        apt-get install -y $deps 2>&1 | tee -a "$LOG_FILE"
+        apt-get -y install $deps 2>&1 | tee -a "$LOG_FILE"
     fi
 
     # Download
