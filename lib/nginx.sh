@@ -135,7 +135,7 @@ _deploy_nginx_conf() {
         "${cur_dir}/conf/nginx/nginx.conf" > /usr/local/nginx/conf/nginx.conf
 
     # Copy additional config files
-    for f in fastcgi.conf proxy.conf security_headers.conf; do
+    for f in fastcgi.conf proxy.conf security_headers.conf mime.types; do
         [[ -f "${cur_dir}/conf/nginx/${f}" ]] && cp "${cur_dir}/conf/nginx/${f}" /usr/local/nginx/conf/
     done
 

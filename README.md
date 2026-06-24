@@ -10,6 +10,7 @@ All software compiled from source or installed via official binaries — no thir
 - **Compile from source** — Nginx with latest OpenSSL (HTTP/2, HTTP/3, TLS 1.3), PHP 8.4 with OPcache enabled and JIT disabled by default
 - **Auto-tuning** — Nginx workers, file cache, MySQL InnoDB buffer pool, PHP-FPM children automatically calculated based on host CPU/RAM
 - **System hardening** — TCP BBR, sysctl tuning, journald log limits, swap auto-creation
+- **Modern MIME types** — Installation-managed Nginx `mime.types` includes `.mjs`, `.webmanifest`, `.wasm`, source maps, JSON-LD, modern images, fonts, audio, and video
 - **Timezone unified** — Single `Timezone` setting applied across system, PHP, and MySQL
 - **IP protection** — Auto-generated catch-all server block prevents SSL certificate leakage via IP access
 - **PHP extension framework** — Registry-based PECL extension compilation
@@ -153,6 +154,7 @@ Configs are automatically optimized based on server specs:
 | Nginx `worker_processes` | = CPU cores |
 | Nginx `worker_connections` | = CPU cores × 1024 (max 65535) |
 | Nginx `open_file_cache max` | 50K ~ 900K based on RAM |
+| Nginx `mime.types` | Project-managed modern MIME map deployed at install time |
 | MySQL `innodb_buffer_pool_size` | = 50% of RAM (min 128M) |
 | MySQL `max_connections` | 64 ~ 512 based on RAM |
 | PHP-FPM `pm.max_children` | = 30% of RAM ÷ 40MB per child |
