@@ -14,7 +14,7 @@ install_deps() {
         build-essential gcc g++ make cmake autoconf automake
         pkg-config libtool bison re2c
         wget curl ca-certificates gnupg lsb-release
-        libxml2-dev libsqlite3-dev libcurl4-openssl-dev libpcre2-dev
+        libxml2-dev libsqlite3-dev libcurl4-openssl-dev libpcre2-dev libicu-dev
         libpng-dev libjpeg-dev libwebp-dev libavif-dev
         libfreetype-dev libonig-dev libreadline-dev
         libsodium-dev libzip-dev libssl-dev libgd-dev
