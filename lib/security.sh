@@ -17,6 +17,23 @@ apply_security() {
     log_ok "Security hardening applied."
 }
 
+_confirm_skip_optional_feature() {
+    local feature="$1" setting="$2"
+
+    if [[ "${Auto_Install:-n}" = 'y' ]]; then
+        die "${feature} failed to install or configure on Ubuntu ${OS_VER}. Set ${setting} to disable it explicitly."
+    fi
+
+    echo ""
+    read -r -p "${feature} failed to install or configure on Ubuntu ${OS_VER}. Skip it and continue? [y/N] " answer
+    if [[ "${answer,,}" = 'y' || "${answer,,}" = 'yes' ]]; then
+        log_warn "Skipping ${feature} by user confirmation."
+        return 0
+    fi
+
+    die "${feature} is required by config but cannot be installed or configured."
+}
+
 _harden_ssh() {
     local sshd_conf="/etc/ssh/sshd_config"
     [[ -f "$sshd_conf" ]] || return 0
@@ -42,6 +59,7 @@ _install_fail2ban() {
     log_info "Installing fail2ban..."
     wait_apt_lock
     apt-get install -y fail2ban 2>&1 | tee -a "$LOG_FILE"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || { _confirm_skip_optional_feature "fail2ban" "Enable_Fail2ban='n'"; return 0; }
 
     cat > /etc/fail2ban/jail.local <<'EOF'
 [DEFAULT]
@@ -71,6 +89,7 @@ _setup_ufw() {
     log_info "Configuring UFW firewall..."
     wait_apt_lock
     apt-get install -y ufw 2>&1 | tee -a "$LOG_FILE"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || { _confirm_skip_optional_feature "UFW firewall" "Firewall='n'"; return 0; }
 
     ufw default deny incoming
     ufw default allow outgoing
@@ -86,6 +105,7 @@ _setup_iptables() {
     log_info "Configuring iptables firewall..."
     wait_apt_lock
     apt-get install -y iptables-persistent 2>&1 | tee -a "$LOG_FILE"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || { _confirm_skip_optional_feature "iptables firewall" "Firewall='n'"; return 0; }
 
     # Flush
     iptables -F

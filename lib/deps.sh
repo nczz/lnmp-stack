@@ -9,24 +9,66 @@ install_deps() {
     log_info "Updating package index..."
     apt-get update -y -qq
 
+    # Core packages that work across 22.04 / 24.04 / 26.04
+    local pkgs=(
+        build-essential gcc g++ make cmake autoconf automake
+        pkg-config libtool bison re2c
+        wget curl ca-certificates gnupg lsb-release
+        libxml2-dev libsqlite3-dev libcurl4-openssl-dev
+        libpng-dev libjpeg-dev libwebp-dev libavif-dev
+        libfreetype-dev libonig-dev libreadline-dev
+        libsodium-dev libzip-dev libssl-dev libgd-dev
+        libxslt1-dev libgmp-dev libldap2-dev libbz2-dev
+        libkrb5-dev
+        libsystemd-dev libevent-dev libmemcached-dev
+        zlib1g-dev liblz4-dev libzstd-dev
+        libmagickwand-dev libmagickcore-dev
+        libpam0g-dev libnuma-dev numactl
+        cron logrotate
+    )
+
+    # ncurses: 24.04+ renamed libncurses5-dev → libncurses-dev
+    if apt-cache show libncurses-dev &>/dev/null 2>&1; then
+        pkgs+=( libncurses-dev )
+    else
+        pkgs+=( libncurses5-dev )
+    fi
+
+    # libaio: 24.04 uses libaio1t64 (time_t transition), earlier uses libaio1
+    pkgs+=( libaio-dev )
+    if apt-cache show libaio1t64 &>/dev/null 2>&1; then
+        pkgs+=( libaio1t64 )
+    else
+        pkgs+=( libaio1 )
+    fi
+
+    # IMAP library: may be missing on newer releases. Only require it when the
+    # user explicitly enables PHP IMAP.
+    if apt-cache show libc-client2007e-dev &>/dev/null 2>&1; then
+        [[ "${INSTALL_TARGET:-lnmp}" = 'lnmp' && "${Enable_PHP_Imap:-n}" = 'y' ]] && pkgs+=( libc-client2007e-dev )
+    elif [[ "${INSTALL_TARGET:-lnmp}" = 'lnmp' && "${Enable_PHP_Imap:-n}" = 'y' ]]; then
+        if [[ "${Auto_Install:-n}" = 'y' ]]; then
+            die "PHP IMAP is enabled, but libc-client2007e-dev is unavailable on Ubuntu ${OS_VER}. Set Enable_PHP_Imap='n' to explicitly skip it."
+        fi
+        echo ""
+        read -r -p "PHP IMAP cannot be built on Ubuntu ${OS_VER} because libc-client2007e-dev is unavailable. Skip PHP IMAP? [y/N] " answer
+        if [[ "${answer,,}" = 'y' || "${answer,,}" = 'yes' ]]; then
+            Enable_PHP_Imap='n'
+            log_warn "Skipping PHP IMAP by user confirmation."
+        else
+            die "PHP IMAP cannot be installed on this Ubuntu release."
+        fi
+    fi
+
+    # Prefer tmux over screen (screen may be removed in future Ubuntu releases)
+    if apt-cache show tmux &>/dev/null 2>&1; then
+        pkgs+=( tmux )
+    else
+        pkgs+=( screen )
+    fi
+
     log_info "Installing system packages (this may take a few minutes)..."
-    apt-get install -y --no-install-recommends \
-        build-essential gcc g++ make cmake autoconf automake \
-        pkg-config libtool bison re2c \
-        wget curl ca-certificates gnupg lsb-release \
-        libxml2-dev libsqlite3-dev libcurl4-openssl-dev \
-        libpng-dev libjpeg-dev libwebp-dev libavif-dev \
-        libfreetype-dev libonig-dev libreadline-dev \
-        libsodium-dev libzip-dev libssl-dev libgd-dev \
-        libxslt1-dev libgmp-dev libldap2-dev libbz2-dev \
-        libkrb5-dev libc-client2007e-dev \
-        libsystemd-dev libevent-dev libmemcached-dev \
-        zlib1g-dev liblz4-dev libzstd-dev \
-        libmagickwand-dev libmagickcore-dev \
-        libncurses5-dev libaio-dev libaio1t64 libpam0g-dev \
-        libnuma-dev numactl \
-        screen cron logrotate \
-    2>&1 | tee -a "$LOG_FILE"
+    apt-get install -y --no-install-recommends "${pkgs[@]}" 2>&1 | tee -a "$LOG_FILE"
 
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Failed to install dependencies"
     log_ok "Dependencies installed."

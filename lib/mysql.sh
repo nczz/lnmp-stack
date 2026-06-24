@@ -2,6 +2,8 @@
 # lib/mysql.sh — MySQL/MariaDB binary or compile install
 
 install_mysql() {
+    _check_db_arch_support
+
     if [[ "${DB_Type}" = 'mariadb' ]]; then
         _install_mariadb
     else
@@ -9,27 +11,37 @@ install_mysql() {
     fi
 }
 
+_check_db_arch_support() {
+    [[ "${ARCH}" = "x86_64" ]] && return 0
+
+    die "Database binary install is currently supported only on x86_64. Detected ${ARCH}; use x86_64 Ubuntu Server for lnmp/db targets, or run the nginx target only."
+}
+
 # Fix shared library issues for MySQL binary package on Ubuntu 24.04+
 _fix_mysql_libs() {
     log_info "Checking MySQL shared library dependencies..."
     wait_apt_lock
 
-    apt-get install -y libaio1t64 libncurses6 libtinfo6 libmecab2 2>&1 | tee -a "$LOG_FILE"
+    # Detect lib directory based on architecture
+    local libdir="/usr/lib/x86_64-linux-gnu"
+    [[ "$ARCH" = "aarch64" ]] && libdir="/usr/lib/aarch64-linux-gnu"
 
-    # MySQL 8.0 binary expects libaio.so.1 but Ubuntu 24.04 has libaio.so.1t64
-    if [[ ! -e /usr/lib/x86_64-linux-gnu/libaio.so.1 ]] && [[ -e /usr/lib/x86_64-linux-gnu/libaio.so.1t64 ]]; then
-        ln -sf /usr/lib/x86_64-linux-gnu/libaio.so.1t64 /usr/lib/x86_64-linux-gnu/libaio.so.1
-        log_info "Symlinked libaio.so.1t64 → libaio.so.1"
+    # Install available runtime libs (package names vary by Ubuntu version)
+    local lib_pkgs=( libncurses6 libtinfo6 libmecab2 )
+    if apt-cache show libaio1t64 &>/dev/null 2>&1; then
+        lib_pkgs+=( libaio1t64 )
+    elif apt-cache show libaio1 &>/dev/null 2>&1; then
+        lib_pkgs+=( libaio1 )
     fi
+    apt-get install -y "${lib_pkgs[@]}" 2>&1 | tee -a "$LOG_FILE"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Failed to install MySQL runtime libraries"
 
-    # MySQL 8.0 binary expects libncurses.so.5 / libtinfo.so.5 but Ubuntu 24.04 has v6
-    if [[ ! -e /usr/lib/x86_64-linux-gnu/libncurses.so.5 ]]; then
-        ln -sf /usr/lib/x86_64-linux-gnu/libncurses.so.6 /usr/lib/x86_64-linux-gnu/libncurses.so.5
-        log_info "Symlinked libncurses.so.6 → libncurses.so.5"
-    fi
-    if [[ ! -e /usr/lib/x86_64-linux-gnu/libtinfo.so.5 ]]; then
-        ln -sf /usr/lib/x86_64-linux-gnu/libtinfo.so.6 /usr/lib/x86_64-linux-gnu/libtinfo.so.5
-        log_info "Symlinked libtinfo.so.6 → libtinfo.so.5"
+    # MySQL 8.4 binary expects libaio.so.1 — create symlink if only t64 variant exists
+    if [[ ! -e "${libdir}/libaio.so.1" ]]; then
+        if [[ -e "${libdir}/libaio.so.1t64" ]]; then
+            ln -sf "${libdir}/libaio.so.1t64" "${libdir}/libaio.so.1"
+            log_info "Symlinked libaio.so.1t64 → libaio.so.1"
+        fi
     fi
 
     ldconfig
@@ -43,7 +55,7 @@ _verify_mysql_libs() {
     if [[ -n "$missing" ]]; then
         log_err "Missing shared libraries for ${bin}:"
         echo "$missing" | tee -a "$LOG_FILE"
-        die "Fix library dependencies before continuing."
+        die "Fix library dependencies before continuing. Do not satisfy missing libncurses.so.5/libtinfo.so.5 by symlinking v6 libraries; use a compatible database binary or package instead."
     fi
     log_ok "Shared library check passed for $(basename "$bin")"
 }
@@ -63,7 +75,12 @@ _install_mysql() {
     cd /usr/local/
     local tarball="$(basename "$MYSQL_URL")"
     tar Jxf "${cur_dir}/src/${tarball}"
-    mv "mysql-${MYSQL_VER}-linux-glibc2.17-x86_64" mysql
+
+    # MySQL binary tarball extracts to mysql-VERSION-linux-glibcX.XX-ARCH
+    local extracted_dir
+    extracted_dir="$(ls -d mysql-${MYSQL_VER}-linux-glibc* 2>/dev/null | head -1)"
+    [[ -n "$extracted_dir" ]] || die "Cannot find extracted MySQL directory"
+    mv "$extracted_dir" mysql
 
     mkdir -p "$db_dir"
     chown -R mysql:mysql /usr/local/mysql
@@ -122,7 +139,12 @@ _install_mariadb() {
     cd /usr/local/
     local tarball="$(basename "$MARIADB_URL")"
     tar zxf "${cur_dir}/src/${tarball}"
-    mv "mariadb-${MARIADB_VER}-linux-systemd-x86_64" mariadb
+
+    # MariaDB binary tarball extracts to mariadb-VERSION-linux-systemd-ARCH
+    local extracted_dir
+    extracted_dir="$(ls -d mariadb-${MARIADB_VER}-linux-* 2>/dev/null | head -1)"
+    [[ -n "$extracted_dir" ]] || die "Cannot find extracted MariaDB directory"
+    mv "$extracted_dir" mariadb
     ln -sf /usr/local/mariadb /usr/local/mysql
 
     mkdir -p "$db_dir"
@@ -131,7 +153,9 @@ _install_mariadb() {
 
     _deploy_mysql_conf "$db_dir"
 
-    /usr/local/mariadb/scripts/mysql_install_db --user=mysql \
+    /usr/local/mariadb/scripts/mariadb-install-db --user=mysql \
+        --basedir=/usr/local/mariadb --datadir="$db_dir" 2>&1 | tee -a "$LOG_FILE" \
+    || /usr/local/mariadb/scripts/mysql_install_db --user=mysql \
         --basedir=/usr/local/mariadb --datadir="$db_dir" 2>&1 | tee -a "$LOG_FILE"
 
     sed -e "s|/usr/local/mysql|/usr/local/mariadb|g" \

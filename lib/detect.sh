@@ -12,6 +12,9 @@ detect_os() {
 
     [[ "$OS_ID" = "ubuntu" ]] || die "Only Ubuntu is supported. Detected: ${OS_ID}"
     [[ "$ARCH" = "x86_64" || "$ARCH" = "aarch64" ]] || die "Unsupported architecture: ${ARCH}"
+    if [[ "$ARCH" != "x86_64" && "${INSTALL_TARGET:-}" != "nginx" ]]; then
+        die "The ${INSTALL_TARGET:-lnmp} target requires x86_64 because MySQL/MariaDB are installed from official x86_64 binary tarballs. Detected: ${ARCH}"
+    fi
 
     log_info "OS: Ubuntu ${OS_VER} (${OS_CODENAME}) ${ARCH}"
 }
@@ -21,7 +24,21 @@ check_os_support() {
     if [[ "$ver_num" -lt 2204 ]]; then
         die "Ubuntu ${OS_VER} is not supported. Minimum: 22.04 LTS"
     fi
-    log_ok "Ubuntu ${OS_VER} is supported."
+
+    # Warn on non-LTS releases (odd .10 releases like 24.10, 25.04, 25.10)
+    case "$OS_VER" in
+        22.04|24.04|26.04) ;;  # known LTS versions
+        *)
+            log_warn "Ubuntu ${OS_VER} is not a LTS release. This stack is tested on LTS only."
+            log_warn "Supported LTS versions: 26.04 (recommended), 24.04, 22.04"
+            ;;
+    esac
+
+    if [[ "$ver_num" -ge 2604 ]]; then
+        log_ok "Ubuntu ${OS_VER} (${OS_CODENAME}) — recommended target."
+    else
+        log_ok "Ubuntu ${OS_VER} is supported."
+    fi
 }
 
 detect_hardware() {

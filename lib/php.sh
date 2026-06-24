@@ -27,7 +27,6 @@ install_php() {
         --with-curl
         --with-openssl
         --with-mhash
-        --with-xmlrpc
         --with-xsl
         --with-gettext
         --with-zip

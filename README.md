@@ -6,17 +6,17 @@ All software compiled from source or installed via official binaries — no thir
 
 ## Features
 
-- **Ubuntu-only** — Supports Ubuntu 22.04 LTS and 24.04 LTS, clean and focused
-- **Compile from source** — Nginx with latest OpenSSL (HTTP/2, HTTP/3, TLS 1.3), PHP 8.3 with OPcache JIT
+- **Ubuntu-only** — Supports Ubuntu 26.04 LTS (recommended), 24.04 LTS, and 22.04 LTS
+- **Compile from source** — Nginx with latest OpenSSL (HTTP/2, HTTP/3, TLS 1.3), PHP 8.4 with OPcache JIT
 - **Auto-tuning** — Nginx workers, file cache, MySQL InnoDB buffer pool, PHP-FPM children automatically calculated based on host CPU/RAM
 - **System hardening** — TCP BBR, sysctl tuning, journald log limits, swap auto-creation
 - **Timezone unified** — Single `Timezone` setting applied across system, PHP, and MySQL
 - **IP protection** — Auto-generated catch-all server block prevents SSL certificate leakage via IP access
 - **PHP extension framework** — Registry-based PECL extension compilation
 - **Batch extension install** — Pre-configure extensions in config, built automatically during installation
-- **Tools included** — Docker, Composer, WP-CLI, phpMyAdmin installed by default
+- **Tools included** — Composer, WP-CLI, phpMyAdmin installed by default; Docker can be enabled in config
 - **SSL management** — Let's Encrypt via acme.sh, self-signed certs, expiry monitoring
-- **Security hardening** — SSH hardening, fail2ban, firewall (UFW or iptables), per-vhost open_basedir
+- **Security hardening** — SSH hardening, optional fail2ban/firewall, per-vhost open_basedir
 - **systemd native** — All services managed via systemd with auto-restart on failure
 - **100% official sources** — Every download comes from nginx.org, php.net, cdn.mysql.com, etc.
 - **Non-interactive mode** — `--auto` flag for fully automated deployment (cloud-init / Terraform ready)
@@ -25,18 +25,24 @@ All software compiled from source or installed via official binaries — no thir
 
 | OS | Version | Status |
 |----|---------|--------|
-| Ubuntu | 24.04 LTS (Noble) | ✅ Recommended |
+| Ubuntu | 26.04 LTS (Resolute) | ✅ Recommended |
+| Ubuntu | 24.04 LTS (Noble) | ✅ Supported |
 | Ubuntu | 22.04 LTS (Jammy) | ✅ Supported |
+
+Full `lnmp` and `db` installs currently require `x86_64` / amd64 because the
+database engines are installed from official x86_64 binary tarballs. The
+`nginx` target can run on `aarch64`, but database installation will stop with a
+clear error instead of installing an incompatible binary.
 
 ## Software Stack
 
 | Software | Version | Install Method |
 |----------|---------|----------------|
-| Nginx | 1.26.3 | Compile (with OpenSSL 3.2.3) |
-| MySQL | 8.0.42 | Binary |
-| MariaDB | 10.11.11 | Binary (alternative) |
-| PHP | 8.3.15 | Compile |
-| Redis | 7.2.7 | Compile (optional) |
+| Nginx | 1.30.3 | Compile (with OpenSSL 3.5.7) |
+| MySQL | 8.4.9 LTS | Binary |
+| MariaDB | 11.4.5 LTS | Binary (alternative) |
+| PHP | 8.4.22 | Compile |
+| Redis | 7.4.2 | Compile (optional) |
 | Docker | Latest | Official script (get.docker.com) |
 | Composer | Latest | Official installer (getcomposer.org) |
 | WP-CLI | Latest | Official phar (wp-cli.org) |
@@ -102,12 +108,17 @@ Load order: `versions.conf` → `lnmp.conf` (defaults) → `lnmp.conf.local` (yo
 | `Enable_PHP_Imap` | `n` | IMAP email protocol |
 | `PHP_Extensions_Install` | `redis imagick apcu` | PECL extensions to compile after install |
 
+On Ubuntu releases where `libc-client2007e-dev` is unavailable, PHP IMAP cannot
+be built. If `Enable_PHP_Imap='y'`, the installer asks whether to skip IMAP in
+interactive mode; in `--auto` mode it stops and requires you to set
+`Enable_PHP_Imap='n'` explicitly.
+
 ### Tools
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `Enable_Composer` | `y` | PHP dependency manager |
-| `Enable_Docker` | `y` | Docker + Docker Compose |
+| `Enable_Docker` | `n` | Docker + Docker Compose |
 | `Enable_WP_CLI` | `y` | WordPress command-line tool |
 | `Enable_phpMyAdmin` | `y` | phpMyAdmin in default host (http://IP/phpmyadmin/) |
 

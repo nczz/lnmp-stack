@@ -2,55 +2,79 @@
 # lib/verify.sh — Post-install verification
 
 verify_all() {
+    local target="${1:-lnmp}"
     log_info "=== Running post-install verification ==="
     local fail=0
 
     # Service checks
-    for svc in nginx php-fpm; do
-        if systemctl is-active --quiet "$svc" 2>/dev/null; then
-            log_ok "${svc}: running"
+    if [[ "$target" = 'lnmp' || "$target" = 'nginx' ]]; then
+        if systemctl is-active --quiet nginx 2>/dev/null; then
+            log_ok "nginx: running"
         else
-            log_err "${svc}: NOT running"; ((fail++))
+            log_err "nginx: NOT running"; ((fail++))
         fi
-    done
+    fi
+
+    if [[ "$target" = 'lnmp' ]]; then
+        if systemctl is-active --quiet php-fpm 2>/dev/null; then
+            log_ok "php-fpm: running"
+        else
+            log_err "php-fpm: NOT running"; ((fail++))
+        fi
+    fi
 
     # DB service (mysql or mariadb)
-    local db_svc="mysql"
-    [[ "${DB_Type}" = 'mariadb' ]] && db_svc="mariadb"
-    if systemctl is-active --quiet "$db_svc" 2>/dev/null; then
-        log_ok "${db_svc}: running"
-    else
-        log_err "${db_svc}: NOT running"; ((fail++))
+    if [[ "$target" = 'lnmp' || "$target" = 'db' ]]; then
+        local db_svc="mysql"
+        [[ "${DB_Type}" = 'mariadb' ]] && db_svc="mariadb"
+        if systemctl is-active --quiet "$db_svc" 2>/dev/null; then
+            log_ok "${db_svc}: running"
+        else
+            log_err "${db_svc}: NOT running"; ((fail++))
+        fi
     fi
 
     # Port checks
-    for port in 80 3306; do
-        if ss -tlnp | grep -q ":${port} "; then
-            log_ok "Port ${port}: listening"
+    if [[ "$target" = 'lnmp' || "$target" = 'nginx' ]]; then
+        if ss -tlnp | grep -q ":80 "; then
+            log_ok "Port 80: listening"
         else
-            log_err "Port ${port}: NOT listening"; ((fail++))
+            log_err "Port 80: NOT listening"; ((fail++))
         fi
-    done
-
-    # Binary checks
-    if /usr/local/php/bin/php -v &>/dev/null; then
-        local php_ver_str=$(/usr/local/php/bin/php -r 'echo PHP_VERSION;')
-        log_ok "PHP ${php_ver_str}: OK"
-    else
-        log_err "PHP binary check failed"; ((fail++))
+    fi
+    if [[ "$target" = 'lnmp' || "$target" = 'db' ]]; then
+        if ss -tlnp | grep -q ":3306 "; then
+            log_ok "Port 3306: listening"
+        else
+            log_err "Port 3306: NOT listening"; ((fail++))
+        fi
     fi
 
-    if /usr/local/nginx/sbin/nginx -t &>/dev/null; then
-        log_ok "Nginx config test: OK"
-    else
-        log_err "Nginx config test: FAILED"; ((fail++))
+    # Binary checks
+    if [[ "$target" = 'lnmp' ]]; then
+        if /usr/local/php/bin/php -v &>/dev/null; then
+            local php_ver_str=$(/usr/local/php/bin/php -r 'echo PHP_VERSION;')
+            log_ok "PHP ${php_ver_str}: OK"
+        else
+            log_err "PHP binary check failed"; ((fail++))
+        fi
+    fi
+
+    if [[ "$target" = 'lnmp' || "$target" = 'nginx' ]]; then
+        if /usr/local/nginx/sbin/nginx -t &>/dev/null; then
+            log_ok "Nginx config test: OK"
+        else
+            log_err "Nginx config test: FAILED"; ((fail++))
+        fi
     fi
 
     # MySQL connection
-    if mysql -u root -e "SELECT 1;" &>/dev/null; then
-        log_ok "MySQL connection: OK"
-    else
-        log_err "MySQL connection: FAILED"; ((fail++))
+    if [[ "$target" = 'lnmp' || "$target" = 'db' ]]; then
+        if mysql -u root -e "SELECT 1;" &>/dev/null; then
+            log_ok "MySQL connection: OK"
+        else
+            log_err "MySQL connection: FAILED"; ((fail++))
+        fi
     fi
 
     echo ""

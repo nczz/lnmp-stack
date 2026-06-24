@@ -206,7 +206,7 @@ fi
 
 # Verify
 log_info "[7/7] Running verification..."
-verify_all
+verify_all "$INSTALL_TARGET"
 
 # Restore needrestart hook
 if [[ "${_NEEDRESTART_DISABLED:-}" = "1" && -f /etc/apt/apt.conf.d/99needrestart.disabled ]]; then
