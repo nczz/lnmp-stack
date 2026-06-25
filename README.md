@@ -143,7 +143,7 @@ interactive mode; in `--auto` mode it stops and requires you to set
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `Enable_Fail2ban` | `n` | SSH + Nginx brute-force protection |
-| `Firewall` | `n` | `ufw`, `iptables`, or `n` (disabled) |
+| `Firewall` | `n` | `ufw`, `iptables`, or `n` (disabled). Firewall modes open IPv4/IPv6 SSH, HTTP, and HTTPS. |
 
 ## Auto-Tuning
 

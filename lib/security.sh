@@ -91,6 +91,14 @@ _setup_ufw() {
     apt-get -y install ufw 2>&1 | tee -a "$LOG_FILE"
     [[ ${PIPESTATUS[0]} -eq 0 ]] || { _confirm_skip_optional_feature "UFW firewall" "Firewall='n'"; return 0; }
 
+    if [[ -f /etc/default/ufw ]]; then
+        if grep -q '^IPV6=' /etc/default/ufw; then
+            sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw
+        else
+            echo 'IPV6=yes' >> /etc/default/ufw
+        fi
+    fi
+
     ufw default deny incoming
     ufw default allow outgoing
     ufw allow ssh
@@ -98,7 +106,7 @@ _setup_ufw() {
     ufw allow 443/tcp
     ufw --force enable
 
-    log_ok "UFW configured (SSH + HTTP + HTTPS allowed)."
+    log_ok "UFW configured (IPv4/IPv6 SSH + HTTP + HTTPS allowed)."
 }
 
 _setup_iptables() {
@@ -110,30 +118,46 @@ _setup_iptables() {
     # Flush
     iptables -F
     iptables -X
+    ip6tables -F
+    ip6tables -X
 
     # Default policy
     iptables -P INPUT DROP
     iptables -P FORWARD DROP
     iptables -P OUTPUT ACCEPT
+    ip6tables -P INPUT DROP
+    ip6tables -P FORWARD DROP
+    ip6tables -P OUTPUT ACCEPT
 
     # Loopback
     iptables -A INPUT -i lo -j ACCEPT
+    ip6tables -A INPUT -i lo -j ACCEPT
 
     # Established connections
     iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+    ip6tables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 
     # SSH
     iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+    ip6tables -A INPUT -p tcp --dport 22 -j ACCEPT
 
     # HTTP / HTTPS
     iptables -A INPUT -p tcp --dport 80 -j ACCEPT
     iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+    ip6tables -A INPUT -p tcp --dport 80 -j ACCEPT
+    ip6tables -A INPUT -p tcp --dport 443 -j ACCEPT
 
     # ICMP (ping)
     iptables -A INPUT -p icmp --icmp-type echo-request -j ACCEPT
+    # ICMPv6 is required for IPv6 neighbor discovery, PMTU, and diagnostics.
+    ip6tables -A INPUT -p ipv6-icmp -j ACCEPT
 
     # Save
-    netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4
+    if ! netfilter-persistent save 2>/dev/null; then
+        mkdir -p /etc/iptables
+        iptables-save > /etc/iptables/rules.v4
+        ip6tables-save > /etc/iptables/rules.v6
+    fi
 
-    log_ok "iptables configured (SSH + HTTP + HTTPS allowed)."
+    log_ok "iptables configured (IPv4/IPv6 SSH + HTTP + HTTPS allowed)."
 }
