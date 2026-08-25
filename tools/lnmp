@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tools/lnmp — Service management command
-# Usage: lnmp {start|stop|restart|reload|status|vhost|ssl|db|reset-password|kill}
+# Usage: lnmp {start|stop|restart|reload|status|vhost|ssl|db|firewall|reset-password|kill}
 
 # Resolve tools directory: same dir as this script, or installed location
 TOOLS_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -132,9 +132,10 @@ case "${1:-}" in
     vhost)   shift; lnmp_vhost "$@" ;;
     ssl)     shift; bash "${TOOLS_DIR}/ssl.sh" "$@" ;;
     db)      shift; bash "${TOOLS_DIR}/db.sh" "$@" ;;
+    firewall) shift; bash "${TOOLS_DIR}/firewall.sh" "$@" ;;
     reset-password) shift; bash "${TOOLS_DIR}/reset_mysql_password.sh" "$@" ;;
     *)
-        echo "Usage: lnmp {start|stop|restart|reload|status|kill|vhost|ssl|db|reset-password}"
+        echo "Usage: lnmp {start|stop|restart|reload|status|kill|vhost|ssl|db|firewall|reset-password}"
         echo ""
         echo "  start          — Start all LNMP services"
         echo "  stop           — Stop all LNMP services"
@@ -145,6 +146,7 @@ case "${1:-}" in
         echo "  vhost          — Virtual host management (add|del|list)"
         echo "  ssl            — SSL certificate management (install|renew|revoke|list|self)"
         echo "  db             — Database management (add|del|list|import|export)"
+        echo "  firewall       — Firewall management (status|on|off|allow|deny|list)"
         echo "  reset-password — Reset MySQL root password (from lnmp.conf or interactive)"
         exit 1
         ;;
