@@ -55,7 +55,7 @@ ssl_install() {
     [[ -n "$domain" ]] || read -r -p "Domain (e.g. example.com): " domain
     [[ -n "$domain" ]] || { echo "Domain required."; exit 1; }
 
-    if [[ -z "$more_domains" && -z "$domain" ]]; then
+    if [[ -z "$more_domains" ]]; then
         read -r -p "More domains (space-separated, or empty): " more_domains
     fi
 
@@ -73,10 +73,15 @@ ssl_install() {
         domain_args+=" -d ${d}"
     done
 
-    # Issue certificate
+    # Issue certificate (exit 0=success, 2=already exists/skip — both are OK)
     echo "Issuing certificate for ${domain}..."
+    local issue_rc=0
     "$ACME_BIN" --issue ${domain_args} -w "$webroot" --keylength "$keytype" --server letsencrypt \
-        || { echo "Certificate issuance failed."; exit 1; }
+        || issue_rc=$?
+    if [[ $issue_rc -ne 0 && $issue_rc -ne 2 ]]; then
+        echo "Certificate issuance failed (exit code: ${issue_rc})."
+        exit 1
+    fi
 
     # Install certificate
     local cert_dir="${SSL_DIR}/${domain}"
@@ -95,8 +100,11 @@ ssl_install() {
     echo "  Key:       ${cert_dir}/key.pem"
     echo "  Fullchain: ${cert_dir}/fullchain.pem"
 
-    # Ask to configure vhost
-    read -r -p "Update Nginx vhost config for SSL? [Y/n]: " update_vhost
+    # Update vhost config (auto-apply in non-interactive, ask in interactive)
+    local update_vhost="y"
+    if [[ -t 0 ]]; then
+        read -r -p "Update Nginx vhost config for SSL? [Y/n]: " update_vhost
+    fi
     if [[ ! "${update_vhost}" =~ ^[Nn]$ ]]; then
         _apply_ssl_vhost "$domain" "$more_domains" "$webroot" "$cert_dir"
     fi
@@ -198,15 +206,18 @@ _apply_ssl_vhost() {
 
     # Optional: redirect HTTP to HTTPS
     if ! grep -q 'return 301 https' "$vhost_conf" 2>/dev/null; then
-        local do_redirect="n"
+        local do_redirect="y"
         [[ "${FORCE_REDIRECT:-}" = "y" ]] && do_redirect="y"
-        [[ "$do_redirect" = "n" ]] && read -r -p "Redirect HTTP to HTTPS (301)? [y/N]: " do_redirect
+        if [[ "$do_redirect" != "y" && -t 0 ]]; then
+            read -r -p "Redirect HTTP to HTTPS (301)? [Y/n]: " do_redirect
+            [[ -z "$do_redirect" ]] && do_redirect="y"
+        fi
         if [[ "${do_redirect}" =~ ^[Yy]$ ]]; then
-            sed -i '/^server {/,/^}/ {
-                /index/a\
+            # Insert redirect after the first 'index' line in the first server block only
+            sed -i '0,/^\s*index /{/^\s*index /a\
 \
     return 301 https://$host$request_uri;
-            }' "$vhost_conf" 2>/dev/null
+}' "$vhost_conf" 2>/dev/null
         fi
     fi
 
