@@ -49,7 +49,7 @@ list_extensions() {
     echo "Available extensions:"
     for ext in "${!EXT_URL_VAR[@]}"; do
         local status="not installed"
-        if $PHP_BIN -m 2>/dev/null | grep -qi "^${ext}$"; then
+        if $PHP_BIN -m 2>/dev/null | grep -i "^${ext}$" >/dev/null; then
             status="installed"
         fi
         printf "  %-15s [%s]\n" "$ext" "$status"
@@ -64,7 +64,7 @@ install_extension() {
 
     [[ -n "${EXT_URL_VAR[$ext]+x}" ]] || die "Unknown extension: ${ext}. Run with 'list' to see available."
 
-    if $PHP_BIN -m 2>/dev/null | grep -qi "^${ext}$"; then
+    if $PHP_BIN -m 2>/dev/null | grep -i "^${ext}$" >/dev/null; then
         log_warn "Extension '${ext}' is already loaded. Skipping."
         return 0
     fi
@@ -105,8 +105,8 @@ install_extension() {
     local ini_file="${PHP_INI_SCAN_DIR}/${ext}.ini"
     echo "extension=${ext}.so" > "$ini_file"
 
-    # Verify
-    if $PHP_BIN -m 2>/dev/null | grep -qi "^${ext}$"; then
+    # Verify (avoid grep -q which triggers SIGPIPE under pipefail)
+    if $PHP_BIN -m 2>/dev/null | grep -i "^${ext}$" >/dev/null; then
         log_ok "Extension '${ext}' installed and loaded."
     else
         log_err "Extension '${ext}' installed but failed to load. Check: php -m"
