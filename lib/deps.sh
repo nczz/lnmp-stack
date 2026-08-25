@@ -24,6 +24,7 @@ install_deps() {
         zlib1g-dev liblz4-dev libzstd-dev
         libmagickwand-dev libmagickcore-dev
         libpam0g-dev libnuma-dev numactl
+        idn
         cron logrotate
     )
 
