@@ -108,9 +108,9 @@ EOF
     # SSL setup (needs working vhost to serve .well-known/acme-challenge/)
     if [[ "${enable_ssl}" =~ ^[Yy]$ ]]; then
         local script_dir="$(cd "$(dirname "$0")" && pwd)"
-        local ssl_args="$domain --webroot $webroot"
-        [[ -n "$more_domains" ]] && ssl_args="$ssl_args --domains \"$more_domains\""
-        FORCE_REDIRECT="$force_redirect" bash "${script_dir}/ssl.sh" install $ssl_args
+        local -a ssl_args=("$domain" --webroot "$webroot")
+        [[ -n "$more_domains" ]] && ssl_args+=(--domains "$more_domains")
+        FORCE_REDIRECT="$force_redirect" bash "${script_dir}/ssl.sh" install "${ssl_args[@]}"
     fi
 
     echo "Virtual host ${domain} created."
