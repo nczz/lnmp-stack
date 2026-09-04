@@ -7,11 +7,39 @@ export DEBIAN_FRONTEND=noninteractive
 export NEEDRESTART_MODE=a
 export NEEDRESTART_SUSPEND=1
 
-# Disable needrestart apt hook entirely during install
-if [[ -f /etc/apt/apt.conf.d/99needrestart ]]; then
-    mv /etc/apt/apt.conf.d/99needrestart /etc/apt/apt.conf.d/99needrestart.disabled
+_NEEDRESTART_CONF='/etc/apt/apt.conf.d/99needrestart'
+_NEEDRESTART_DISABLED_CONF="${_NEEDRESTART_CONF}.disabled"
+_NEEDRESTART_DISABLED=0
+
+restore_needrestart_hook() {
+    if [[ "${_NEEDRESTART_DISABLED:-0}" != "1" || ! -f "$_NEEDRESTART_DISABLED_CONF" ]]; then
+        return 0
+    fi
+    if [[ -e "$_NEEDRESTART_CONF" ]]; then
+        log_warn "needrestart hook was recreated during install; leaving backup at ${_NEEDRESTART_DISABLED_CONF}."
+        return 0
+    fi
+    mv "$_NEEDRESTART_DISABLED_CONF" "$_NEEDRESTART_CONF"
+    _NEEDRESTART_DISABLED=0
+}
+trap restore_needrestart_hook EXIT
+
+disable_needrestart_hook() {
+    if [[ ! -f "$_NEEDRESTART_CONF" ]]; then
+        if [[ -f "$_NEEDRESTART_DISABLED_CONF" ]]; then
+            mv "$_NEEDRESTART_DISABLED_CONF" "$_NEEDRESTART_CONF"
+            log_warn "Restored previously disabled needrestart hook before install."
+        else
+            return 0
+        fi
+    fi
+    if [[ -e "$_NEEDRESTART_DISABLED_CONF" ]]; then
+        log_warn "needrestart hook backup already exists; leaving current hook enabled."
+        return 0
+    fi
+    mv "$_NEEDRESTART_CONF" "$_NEEDRESTART_DISABLED_CONF"
     _NEEDRESTART_DISABLED=1
-fi
+}
 
 LNMP_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -60,6 +88,9 @@ step_done() {
 # Start
 print_banner
 check_root
+
+# Disable needrestart apt hook during install, then restore it on every exit path.
+disable_needrestart_hook
 
 START_TIME=$(date +%s)
 echo "Install log: ${LOG_FILE}"
@@ -216,10 +247,8 @@ fi
 log_info "[7/7] Running verification..."
 verify_all "$INSTALL_TARGET"
 
-# Restore needrestart hook
-if [[ "${_NEEDRESTART_DISABLED:-}" = "1" && -f /etc/apt/apt.conf.d/99needrestart.disabled ]]; then
-    mv /etc/apt/apt.conf.d/99needrestart.disabled /etc/apt/apt.conf.d/99needrestart
-fi
+# Restore needrestart hook before success cleanup; the EXIT trap covers failures.
+restore_needrestart_hook
 
 # Clean up progress file on success
 rm -f "$_PROGRESS_FILE"
@@ -235,17 +264,24 @@ echo "+---------------------------------------------------+"
 echo "|          Installation Complete!                    |"
 echo "+---------------------------------------------------+"
 echo "  Time elapsed: ${MINUTES}m ${SECONDS_REMAIN}s"
-echo "  Nginx: /usr/local/nginx/"
-[[ "$INSTALL_TARGET" != 'nginx' ]] && echo "  $(db_label): /usr/local/mysql/"
+[[ "$INSTALL_TARGET" = 'lnmp' || "$INSTALL_TARGET" = 'nginx' ]] && echo "  Nginx: /usr/local/nginx/"
+[[ "$INSTALL_TARGET" = 'lnmp' || "$INSTALL_TARGET" = 'db' ]] && echo "  $(db_label): /usr/local/mysql/"
 [[ "$INSTALL_TARGET" = 'lnmp' ]] && echo "  PHP:   /usr/local/php/"
-echo "  Web root: ${Default_Website_Dir:-/home/wwwroot/default}"
+[[ "$INSTALL_TARGET" = 'lnmp' || "$INSTALL_TARGET" = 'nginx' ]] && echo "  Web root: ${Default_Website_Dir:-/home/wwwroot/default}"
 echo "  Logs: /home/wwwlogs/"
 echo "  Install log: ${LOG_FILE}"
-[[ -f /root/.my.cnf ]] && echo "  Database root password: /root/.my.cnf"
-command -v docker &>/dev/null && echo "  Docker: $(docker --version 2>/dev/null | awk '{print $3}' | tr -d ',')"
-[[ -x /usr/local/bin/composer ]] && echo "  Composer: $(composer --version 2>/dev/null | awk '{print $3}')"
-[[ -x /usr/local/bin/wp ]] && echo "  WP-CLI: $(wp --version 2>/dev/null)"
-[[ -n "${PHP_Extensions_Install:-}" ]] && echo "  PHP extensions: ${PHP_Extensions_Install}"
+[[ "$INSTALL_TARGET" = 'lnmp' || "$INSTALL_TARGET" = 'db' ]] && [[ -f /root/.my.cnf ]] && echo "  Database root password: /root/.my.cnf"
+[[ "${Enable_Docker:-n}" = 'y' ]] && command -v docker &>/dev/null && echo "  Docker: $(timeout 10 docker --version 2>/dev/null | awk '{print $3}' | tr -d ',')"
+# Version probes are wrapped in `timeout` as a safety fuse. Composer also runs
+# with --no-interaction so any unexpected first-run prompt cannot block the
+# installer summary.
+if [[ "$INSTALL_TARGET" = 'lnmp' && "${Enable_Composer:-n}" = 'y' && -x /usr/local/bin/composer ]]; then
+    echo "  Composer: $(timeout 10 /usr/local/php/bin/php /usr/local/bin/composer --version --no-interaction 2>/dev/null | awk '{print $3}')"
+fi
+if [[ "$INSTALL_TARGET" = 'lnmp' && "${Enable_WP_CLI:-n}" = 'y' && -x /usr/local/bin/wp ]]; then
+    echo "  WP-CLI: $(timeout 10 /usr/local/php/bin/php /usr/local/bin/wp --version --allow-root 2>/dev/null)"
+fi
+[[ "$INSTALL_TARGET" = 'lnmp' && -n "${PHP_Extensions_Install:-}" ]] && echo "  PHP extensions: ${PHP_Extensions_Install}"
 echo ""
 echo "  Management: lnmp {start|stop|restart|status}"
 echo "+---------------------------------------------------+"

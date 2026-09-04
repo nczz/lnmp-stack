@@ -188,8 +188,12 @@ install_wp_cli() {
     [[ "${Enable_WP_CLI}" = 'y' ]] || return 0
 
     if [[ -x /usr/local/bin/wp ]]; then
-        log_info "WP-CLI already installed, skipping."
-        return 0
+        if timeout 15 /usr/local/php/bin/php /usr/local/bin/wp --info --allow-root &>/dev/null; then
+            log_info "WP-CLI already installed, skipping."
+            return 0
+        fi
+        log_warn "Existing WP-CLI failed verification; reinstalling."
+        rm -f /usr/local/bin/wp
     fi
 
     log_info "Installing WP-CLI..."
@@ -197,10 +201,13 @@ install_wp_cli() {
     curl -sS -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
     chmod +x /usr/local/bin/wp
 
-    if /usr/local/bin/wp --info &>/dev/null; then
+    # Run under a timeout with --allow-root so this verification never hangs
+    # and does not fail with WP-CLI's "running as root" guard.
+    if timeout 15 /usr/local/php/bin/php /usr/local/bin/wp --info --allow-root &>/dev/null; then
         log_ok "WP-CLI installed."
     else
-        log_warn "WP-CLI installed but may need PHP in PATH to work."
+        rm -f /usr/local/bin/wp
+        log_warn "WP-CLI installed but failed verification. Check: /usr/local/php/bin/php /usr/local/bin/wp --info --allow-root"
     fi
 }
 
