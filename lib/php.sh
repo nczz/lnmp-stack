@@ -1,6 +1,25 @@
 #!/usr/bin/env bash
 # lib/php.sh — PHP compile and install
 
+_queue_legacy_imap_extension() {
+    # IMAP was unbundled from PHP core in PHP 8.4 and must be installed as a
+    # PECL extension. Keep the legacy flag as a compatibility alias so existing
+    # lnmp.conf.local files still produce the requested capability.
+    [[ "${Enable_PHP_Imap:-n}" = 'y' ]] || return 0
+    [[ "${_LEGACY_IMAP_QUEUE_NORMALIZED:-n}" = 'y' ]] && return 0
+    _LEGACY_IMAP_QUEUE_NORMALIZED='y'
+
+    log_warn "Enable_PHP_Imap='y' queues the PECL IMAP extension; PHP ${PHP_VER} no longer builds IMAP into core."
+    case " ${PHP_Extensions_Install:-} " in
+        *" imap "*) ;;
+        *)
+            PHP_Extensions_Install="${PHP_Extensions_Install:-} imap"
+            PHP_Extensions_Install="${PHP_Extensions_Install# }"
+            log_warn "Added 'imap' to PHP_Extensions_Install for this run."
+            ;;
+    esac
+}
+
 install_php() {
     log_info "=== Installing PHP ${PHP_VER} ==="
 
@@ -50,18 +69,22 @@ install_php() {
     )
 
     # Optional extensions from lnmp.conf
-    [[ "${Enable_PHP_Fileinfo}" = 'y' ]] && php_configure_args+=( --enable-fileinfo ) || php_configure_args+=( --disable-fileinfo )
-    [[ "${Enable_PHP_Exif}" = 'y' ]] && php_configure_args+=( --enable-exif )
-    [[ "${Enable_PHP_Ldap}" = 'y' ]] && php_configure_args+=( --with-ldap --with-ldap-sasl )
-    [[ "${Enable_PHP_Bz2}" = 'y' ]] && php_configure_args+=( --with-bz2 )
-    [[ "${Enable_PHP_Sodium}" = 'y' ]] && php_configure_args+=( --with-sodium )
-    [[ "${Enable_PHP_Imap}" = 'y' ]] && php_configure_args+=( --with-imap --with-imap-ssl --with-kerberos )
+    [[ "${Enable_PHP_Fileinfo:-n}" = 'y' ]] && php_configure_args+=( --enable-fileinfo ) || php_configure_args+=( --disable-fileinfo )
+    [[ "${Enable_PHP_Exif:-n}" = 'y' ]] && php_configure_args+=( --enable-exif )
+    [[ "${Enable_PHP_Ldap:-n}" = 'y' ]] && php_configure_args+=( --with-ldap --with-ldap-sasl )
+    [[ "${Enable_PHP_Bz2:-n}" = 'y' ]] && php_configure_args+=( --with-bz2 )
+    [[ "${Enable_PHP_Sodium:-n}" = 'y' ]] && php_configure_args+=( --with-sodium )
+    _queue_legacy_imap_extension
 
     # User-defined extra options
-    [[ -n "${PHP_Modules_Options}" ]] && php_configure_args+=( ${PHP_Modules_Options} )
+    if [[ -n "${PHP_Modules_Options}" ]]; then
+        local -a php_extra_args=()
+        read -r -a php_extra_args <<< "${PHP_Modules_Options}"
+        php_configure_args+=( "${php_extra_args[@]}" )
+    fi
 
     # Prioritize system pkg-config paths to avoid /usr/local contamination
-    export PKG_CONFIG_PATH="/usr/lib/${ARCH}-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+    export PKG_CONFIG_PATH="/usr/lib/${ARCH:?detect_os must run before install_php}-linux-gnu/pkgconfig:/usr/share/pkgconfig"
 
     ./configure "${php_configure_args[@]}" 2>&1 | tee -a "$LOG_FILE"
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "PHP configure failed"
@@ -78,7 +101,7 @@ install_php() {
     mkdir -p /usr/local/php/var/run
 
     # Install systemd unit
-    cp "${cur_dir}/systemd/php-fpm.service" /etc/systemd/system/php-fpm.service
+    cp "${cur_dir:?lib/common.sh must be sourced before lib/php.sh}/systemd/php-fpm.service" /etc/systemd/system/php-fpm.service
     systemctl daemon-reload
     systemctl enable php-fpm
 
@@ -90,10 +113,10 @@ install_php() {
     ln -sf /usr/local/php/sbin/php-fpm /usr/bin/php-fpm
 
     # Install Composer
-    [[ "${Enable_Composer}" = 'y' ]] && _install_composer
+    [[ "${Enable_Composer:-n}" = 'y' ]] && _install_composer
 
     # phpMyAdmin
-    [[ "${Enable_phpMyAdmin}" = 'y' ]] && _install_phpmyadmin
+    [[ "${Enable_phpMyAdmin:-n}" = 'y' ]] && _install_phpmyadmin
 
     # phpinfo for verification
     echo "<?php phpinfo(); ?>" > "${Default_Website_Dir:-/home/wwwroot/default}/phpinfo.php"
@@ -161,8 +184,9 @@ _install_phpmyadmin() {
     log_info "Installing phpMyAdmin ${PHPMYADMIN_VER}..."
     download_src "phpMyAdmin" "$PHPMYADMIN_URL"
 
-    local filename="$(basename "$PHPMYADMIN_URL")"
-    cd "${cur_dir}/src"
+    local filename
+    filename="$(basename "$PHPMYADMIN_URL")"
+    cd "${cur_dir}/src" || die "Cannot cd to ${cur_dir}/src"
     tar Jxf "$filename"
     mv "phpMyAdmin-${PHPMYADMIN_VER}-all-languages" "$dest"
 

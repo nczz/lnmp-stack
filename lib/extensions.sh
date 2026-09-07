@@ -44,6 +44,14 @@ EXT_URL_VAR[sodium]='SODIUM_EXT_URL'
 EXT_CONFIGURE[sodium]=''
 EXT_DEPS[sodium]='libsodium-dev'
 
+# IMAP: unbundled from PHP core as of PHP 8.4, now a PECL extension.
+# Pass --with-imap=/usr to enable the extension and point it at Ubuntu's
+# c-client prefix; SSL/Kerberos flags match Ubuntu's c-client build options.
+# libc-client2007e-dev provides the c-client library (Ubuntu: universe).
+EXT_URL_VAR[imap]='IMAP_EXT_URL'
+EXT_CONFIGURE[imap]='--with-imap=/usr --with-imap-ssl --with-kerberos'
+EXT_DEPS[imap]='libc-client2007e-dev libkrb5-dev libssl-dev'
+
 # List available extensions
 list_extensions() {
     echo "Available extensions:"
@@ -74,8 +82,12 @@ install_extension() {
     # Install system dependencies
     local deps="${EXT_DEPS[$ext]}"
     if [[ -n "$deps" ]]; then
+        local -a dep_args=()
+        read -r -a dep_args <<< "$deps"
         log_info "Installing dependencies: ${deps}"
-        apt-get -y install $deps 2>&1 | tee -a "$LOG_FILE"
+        wait_apt_lock
+        apt-get -y install "${dep_args[@]}" 2>&1 | tee -a "$LOG_FILE"
+        [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Failed to install dependencies for ${ext}: ${deps}"
     fi
 
     # Download
@@ -83,11 +95,12 @@ install_extension() {
     local url="${!url_var}"
     [[ -n "$url" ]] || die "No URL defined for extension: ${ext}"
 
-    local filename="$(basename "$url")"
+    local filename
+    filename="$(basename "$url")"
     download_src "${ext}" "$url"
 
     # Extract
-    cd "${cur_dir}/src"
+    cd "${cur_dir:?lib/common.sh must be sourced before lib/extensions.sh}/src" || die "Cannot cd to ${cur_dir}/src"
     local dirname="${filename%.tgz}"
     dirname="${dirname%.tar.gz}"
     [[ -d "$dirname" ]] && rm -rf "$dirname"
@@ -96,7 +109,14 @@ install_extension() {
 
     # Build
     $PHPIZE
-    ./configure --with-php-config=$PHP_CONFIG ${EXT_CONFIGURE[$ext]} 2>&1 | tee -a "$LOG_FILE"
+    local configure_opts="${EXT_CONFIGURE[$ext]}"
+    local -a configure_args=( --with-php-config="$PHP_CONFIG" )
+    if [[ -n "$configure_opts" ]]; then
+        local -a configure_extra_args=()
+        read -r -a configure_extra_args <<< "$configure_opts"
+        configure_args+=( "${configure_extra_args[@]}" )
+    fi
+    ./configure "${configure_args[@]}" 2>&1 | tee -a "$LOG_FILE"
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Configure failed for ${ext}"
 
     make_install
@@ -111,6 +131,15 @@ install_extension() {
     else
         log_err "Extension '${ext}' installed but failed to load. Check: php -m"
     fi
+}
+
+install_configured_php_extensions() {
+    [[ -n "${PHP_Extensions_Install:-}" ]] || return 0
+    log_info "Installing PHP extensions: ${PHP_Extensions_Install}"
+    local ext
+    for ext in ${PHP_Extensions_Install}; do
+        install_extension "$ext"
+    done
 }
 
 # Uninstall a PHP extension
@@ -158,13 +187,19 @@ install_redis_server() {
 install_memcached_server() {
     log_info "=== Installing Memcached ${MEMCACHED_VER} ==="
 
+    wait_apt_lock
+    apt-get -y install --no-install-recommends libevent-dev libsasl2-dev 2>&1 | tee -a "$LOG_FILE"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Failed to install Memcached build dependencies"
+
     download_src "Memcached" "$MEMCACHED_URL"
     tar_cd "memcached-${MEMCACHED_VER}.tar.gz" "memcached-${MEMCACHED_VER}"
 
     ./configure --prefix=/usr/local/memcached --enable-sasl
     make_install
-
     ln -sf /usr/local/memcached/bin/memcached /usr/bin/memcached
+    cp "${cur_dir}/systemd/memcached.service" /etc/systemd/system/memcached.service
+    systemctl daemon-reload
+    systemctl enable memcached
 
     log_ok "Memcached ${MEMCACHED_VER} installed."
 }

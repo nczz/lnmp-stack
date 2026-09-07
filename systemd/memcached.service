@@ -1,0 +1,16 @@
+[Unit]
+Description=Memcached
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/memcached/bin/memcached -m 64 -p 11211 -l 127.0.0.1 -U 0 -c 1024 -u nobody
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

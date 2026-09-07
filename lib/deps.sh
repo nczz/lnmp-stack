@@ -18,7 +18,7 @@ install_deps() {
         libpng-dev libjpeg-dev libwebp-dev libavif-dev
         libfreetype-dev libonig-dev libreadline-dev
         libsodium-dev libzip-dev libssl-dev libgd-dev
-        libxslt1-dev libgmp-dev libldap2-dev libbz2-dev
+        libxslt1-dev libgmp-dev libldap2-dev libsasl2-dev libbz2-dev
         libkrb5-dev
         libsystemd-dev libevent-dev libmemcached-dev
         zlib1g-dev liblz4-dev libzstd-dev
@@ -26,6 +26,7 @@ install_deps() {
         libpam0g-dev libnuma-dev numactl
         idn
         cron logrotate
+        vim
     )
 
     # ncurses: 24.04+ renamed libncurses5-dev → libncurses-dev
@@ -43,23 +44,10 @@ install_deps() {
         pkgs+=( libaio1 )
     fi
 
-    # IMAP library: may be missing on newer releases. Only require it when the
-    # user explicitly enables PHP IMAP.
-    if apt-cache show libc-client2007e-dev &>/dev/null 2>&1; then
-        [[ "${INSTALL_TARGET:-lnmp}" = 'lnmp' && "${Enable_PHP_Imap:-n}" = 'y' ]] && pkgs+=( libc-client2007e-dev )
-    elif [[ "${INSTALL_TARGET:-lnmp}" = 'lnmp' && "${Enable_PHP_Imap:-n}" = 'y' ]]; then
-        if [[ "${Auto_Install:-n}" = 'y' ]]; then
-            die "PHP IMAP is enabled, but libc-client2007e-dev is unavailable on Ubuntu ${OS_VER}. Set Enable_PHP_Imap='n' to explicitly skip it."
-        fi
-        echo ""
-        read -r -p "PHP IMAP cannot be built on Ubuntu ${OS_VER} because libc-client2007e-dev is unavailable. Skip PHP IMAP? [y/N] " answer
-        if [[ "${answer,,}" = 'y' || "${answer,,}" = 'yes' ]]; then
-            Enable_PHP_Imap='n'
-            log_warn "Skipping PHP IMAP by user confirmation."
-        else
-            die "PHP IMAP cannot be installed on this Ubuntu release."
-        fi
-    fi
+    # IMAP: as of PHP 8.4 the IMAP extension is unbundled and can no longer be
+    # compiled into PHP. It is now installed on demand as a PECL extension
+    # (`lnmp addons install imap`), which pulls its own build deps (including
+    # libc-client2007e-dev) via lib/extensions.sh. Nothing to do here.
 
     # Prefer tmux over screen (screen may be removed in future Ubuntu releases)
     if apt-cache show tmux &>/dev/null 2>&1; then
@@ -73,6 +61,32 @@ install_deps() {
 
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Failed to install dependencies"
     log_ok "Dependencies installed."
+}
+
+setup_vim() {
+    # Disable vim's mouse integration so terminal text selection / copy-paste
+    # works normally over SSH. Vim's defaults.vim is loaded after the system
+    # vimrc when no user vimrc exists, so source defaults first, then prevent
+    # the later automatic defaults load from overriding `set mouse=`.
+    log_info "Configuring vim (disable mouse integration)..."
+
+    local vimrc='/etc/vim/vimrc.local'
+    mkdir -p /etc/vim
+    if [[ -f "$vimrc" ]] && grep -q 'Managed by lnmp-stack: keep Vim defaults but disable mouse' "$vimrc"; then
+        log_info "vim mouse override already present in ${vimrc}, skipping."
+    else
+        cat >> "$vimrc" <<'EOF'
+
+" Managed by lnmp-stack: keep Vim defaults but disable mouse for SSH copy/paste.
+if exists('$VIMRUNTIME') && filereadable($VIMRUNTIME . '/defaults.vim')
+  unlet! g:skip_defaults_vim
+  execute 'source' fnameescape($VIMRUNTIME . '/defaults.vim')
+endif
+let g:skip_defaults_vim = 1
+set mouse=
+EOF
+        log_ok "vim mouse integration disabled via ${vimrc}."
+    fi
 }
 
 setup_timezone() {
@@ -160,11 +174,11 @@ check_dns() {
 create_dirs() {
     mkdir -p /home/wwwroot/default
     mkdir -p /home/wwwlogs
-    mkdir -p "${cur_dir}/src"
+    mkdir -p "${cur_dir:?lib/common.sh must be sourced before lib/deps.sh}/src"
 }
 
 install_docker() {
-    [[ "${Enable_Docker}" = 'y' ]] || return 0
+    [[ "${Enable_Docker:-n}" = 'y' ]] || return 0
 
     if command -v docker &>/dev/null; then
         log_info "Docker already installed, skipping."
@@ -185,7 +199,7 @@ install_docker() {
 }
 
 install_wp_cli() {
-    [[ "${Enable_WP_CLI}" = 'y' ]] || return 0
+    [[ "${Enable_WP_CLI:-n}" = 'y' ]] || return 0
 
     if [[ -x /usr/local/bin/wp ]]; then
         if timeout 15 /usr/local/php/bin/php /usr/local/bin/wp --info --allow-root &>/dev/null; then
@@ -218,6 +232,7 @@ prepare_system() {
     check_dns
     create_dirs
     install_deps
+    setup_vim
     setup_timezone
     setup_system_limits
     setup_journald

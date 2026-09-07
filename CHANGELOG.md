@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.5 — 2026-09-07
+
+### New Features
+
+- **`lnmp addons` subcommand** — Manage PHP extensions and optional Redis/Memcached services through the installed `lnmp` command.
+- **PECL IMAP support for PHP 8.4** — IMAP is now installed as a PECL extension. Existing `Enable_PHP_Imap='y'` overrides are treated as a compatibility alias and queue the `imap` PECL extension during full installs.
+- **Memcached systemd service** — `lnmp addons install memcached-server` now installs, enables, and starts a localhost-only Memcached service instead of only installing the binary.
+
+### Component Updates
+
+- PHP 8.4.24 → 8.4.25 (bug fix)
+
+### Bug Fixes
+
+- Add the missing `--with-imap=/usr` configure flag required to build the PECL IMAP extension against Ubuntu's c-client package.
+- Install `libsasl2-dev` before compiling PHP with LDAP SASL support enabled by default.
+- Make addon dependency installs wait for apt/dpkg locks and fail fast on package installation errors.
+- Make the Vim mouse override survive Ubuntu's later `defaults.vim` loading while preserving Vim defaults.
+
 ## v1.4 — 2026-09-04
 
 ### New Features

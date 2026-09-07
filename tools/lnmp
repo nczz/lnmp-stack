@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # tools/lnmp — Service management command
-# Usage: lnmp {start|stop|restart|reload|status|vhost|ssl|db|firewall|reset-password|kill}
+# Usage: lnmp {start|stop|restart|reload|status|vhost|ssl|db|firewall|addons|reset-password|kill}
 
 # Resolve tools directory: same dir as this script, or installed location
 TOOLS_DIR="$(cd "$(dirname "$0")" && pwd)"
 [[ -f "${TOOLS_DIR}/vhost.sh" ]] || TOOLS_DIR="$(dirname "$(readlink -f "$0")")"
 [[ -f "${TOOLS_DIR}/vhost.sh" ]] || TOOLS_DIR="/root/lnmp-stack/tools"
 
-SERVICES_LNMP="nginx mysql php-fpm"
 
 get_db_service() {
     if systemctl list-unit-files mariadb.service &>/dev/null && systemctl is-enabled mariadb &>/dev/null; then
@@ -18,7 +17,8 @@ get_db_service() {
 }
 
 lnmp_start() {
-    local db_svc=$(get_db_service)
+    local db_svc
+    db_svc=$(get_db_service)
     for svc in nginx "$db_svc" php-fpm; do
         echo "Starting ${svc}..."
         systemctl start "$svc"
@@ -26,7 +26,8 @@ lnmp_start() {
 }
 
 lnmp_stop() {
-    local db_svc=$(get_db_service)
+    local db_svc
+    db_svc=$(get_db_service)
     for svc in nginx "$db_svc" php-fpm; do
         echo "Stopping ${svc}..."
         systemctl stop "$svc"
@@ -47,7 +48,8 @@ lnmp_reload() {
 }
 
 lnmp_status() {
-    local db_svc=$(get_db_service)
+    local db_svc
+    db_svc=$(get_db_service)
 
     echo ""
     echo "┌─────────────────────────────────────────────┐"
@@ -56,7 +58,7 @@ lnmp_status() {
     echo "│ Service      │ Status   │ Info               │"
     echo "├──────────────┼──────────┼────────────────────┤"
 
-    for svc in nginx "$db_svc" php-fpm redis; do
+    for svc in nginx "$db_svc" php-fpm redis memcached; do
         local status="stopped"
         local info="-"
         local icon="✗"
@@ -85,6 +87,9 @@ lnmp_status() {
             redis)
                 [[ -x /usr/local/redis/bin/redis-server ]] && info=$(/usr/local/redis/bin/redis-server --version 2>/dev/null | awk '{print $3}' | cut -d= -f2) || info="-"
                 ;;
+            memcached)
+                [[ -x /usr/local/memcached/bin/memcached ]] && info=$(/usr/local/memcached/bin/memcached -h 2>/dev/null | sed -n '1s/^memcached //p') || info="-"
+                ;;
         esac
 
         printf "│ %-12s │ %s %-6s │ %-18s │\n" "$svc" "$icon" "$status" "$info"
@@ -95,7 +100,7 @@ lnmp_status() {
     echo "├──────────────────────────────────────────────┤"
 
     local found_port=0
-    for port in 80 443 3306 6379; do
+    for port in 80 443 3306 6379 11211; do
         local proc
         proc=$(ss -tlnp 2>/dev/null | grep ":${port} " | awk '{print $NF}' | sed 's/.*"\(.*\)".*/\1/' | head -1)
         if [[ -n "$proc" ]]; then
@@ -133,9 +138,10 @@ case "${1:-}" in
     ssl)     shift; bash "${TOOLS_DIR}/ssl.sh" "$@" ;;
     db)      shift; bash "${TOOLS_DIR}/db.sh" "$@" ;;
     firewall) shift; bash "${TOOLS_DIR}/firewall.sh" "$@" ;;
+    addons)  shift; bash "${TOOLS_DIR}/addons.sh" "$@" ;;
     reset-password) shift; bash "${TOOLS_DIR}/reset_mysql_password.sh" "$@" ;;
     *)
-        echo "Usage: lnmp {start|stop|restart|reload|status|kill|vhost|ssl|db|firewall|reset-password}"
+        echo "Usage: lnmp {start|stop|restart|reload|status|kill|vhost|ssl|db|firewall|addons|reset-password}"
         echo ""
         echo "  start          — Start all LNMP services"
         echo "  stop           — Stop all LNMP services"
@@ -147,6 +153,7 @@ case "${1:-}" in
         echo "  ssl            — SSL certificate management (install|renew|revoke|list|self)"
         echo "  db             — Database management (add|del|list|import|export)"
         echo "  firewall       — Firewall management (status|on|off|allow|deny|list)"
+        echo "  addons         — Addon management (install|uninstall|list)"
         echo "  reset-password — Reset MySQL root password (from lnmp.conf or interactive)"
         exit 1
         ;;

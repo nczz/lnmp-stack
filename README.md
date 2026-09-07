@@ -39,15 +39,15 @@ clear error instead of installing an incompatible binary.
 
 | Software | Version | Install Method |
 |----------|---------|----------------|
-| Nginx | 1.30.3 | Compile (with OpenSSL 3.5.7) |
-| MariaDB | 11.4.5 LTS | Binary (default) |
+| Nginx | 1.30.4 | Compile (with OpenSSL 3.5.7) |
+| MariaDB | 11.4.13 LTS | Binary (default) |
 | MySQL | 8.4.9 LTS | Binary (not supported on Ubuntu 26.04) |
-| PHP | 8.4.22 | Compile |
-| Redis | 7.4.2 | Compile (optional) |
+| PHP | 8.4.25 | Compile |
+| Redis | 8.10.1 | Compile (optional) |
 | Docker | Latest | Official script (get.docker.com) |
 | Composer | Latest | Official installer (getcomposer.org) |
 | WP-CLI | Latest | Official phar (wp-cli.org) |
-| phpMyAdmin | 5.2.2 | Official tarball |
+| phpMyAdmin | 5.2.3 | Official tarball |
 
 ## Quick Start
 
@@ -107,18 +107,18 @@ older supported Ubuntu releases where its binary dependencies can be satisfied.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `PHP_Modules_Options` | (empty) | Extra compile options, e.g. `--with-pgsql` |
-| `Enable_PHP_Exif` | `n` | Image EXIF metadata reading |
-| `Enable_PHP_Fileinfo` | `n` | File MIME type detection |
-| `Enable_PHP_Ldap` | `n` | LDAP directory access |
-| `Enable_PHP_Bz2` | `n` | Bzip2 compression |
-| `Enable_PHP_Sodium` | `n` | Modern cryptography (libsodium) |
-| `Enable_PHP_Imap` | `n` | IMAP email protocol |
+| `Enable_PHP_Exif` | `y` | Image EXIF metadata reading |
+| `Enable_PHP_Fileinfo` | `y` | File MIME type detection |
+| `Enable_PHP_Ldap` | `y` | LDAP directory access |
+| `Enable_PHP_Bz2` | `y` | Bzip2 compression |
+| `Enable_PHP_Sodium` | `y` | Modern cryptography (libsodium) |
+| `Enable_PHP_Imap` | `n` | Legacy alias that queues the PECL `imap` extension |
 | `PHP_Extensions_Install` | `redis imagick apcu` | PECL extensions to compile after install |
 
-On Ubuntu releases where `libc-client2007e-dev` is unavailable, PHP IMAP cannot
-be built. If `Enable_PHP_Imap='y'`, the installer asks whether to skip IMAP in
-interactive mode; in `--auto` mode it stops and requires you to set
-`Enable_PHP_Imap='n'` explicitly.
+PHP 8.4 moved IMAP out of PHP core and into PECL. Prefer
+`PHP_Extensions_Install='redis imagick apcu imap'`; existing
+`Enable_PHP_Imap='y'` overrides are treated as a compatibility alias and queue
+the same PECL extension during full installs.
 
 ### Tools
 
@@ -249,16 +249,16 @@ lnmp reset-password
 PHP_Extensions_Install='redis imagick apcu swoole'
 
 # Or manage later
-sudo ./tools/addons.sh install redis
-sudo ./tools/addons.sh install imagick
-sudo ./tools/addons.sh uninstall swoole
-sudo ./tools/addons.sh list
+sudo lnmp addons install redis
+sudo lnmp addons install imagick
+sudo lnmp addons uninstall swoole
+sudo lnmp addons list
 
-# Available: redis, imagick, apcu, swoole, memcached, sodium
+# Available: redis, imagick, apcu, swoole, memcached, sodium, imap
 
 # Standalone services
-sudo ./tools/addons.sh install redis-server
-sudo ./tools/addons.sh install memcached-server
+sudo lnmp addons install redis-server
+sudo lnmp addons install memcached-server
 ```
 
 OPcache is compiled and enabled by default. OPcache JIT is intentionally left

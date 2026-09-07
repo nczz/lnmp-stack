@@ -60,6 +60,7 @@ done
 # Load config (lnmp.conf = defaults, lnmp.conf.local = user overrides)
 source "${LNMP_DIR}/versions.conf"
 source "${LNMP_DIR}/lnmp.conf"
+# shellcheck source=/dev/null
 [[ -f "${LNMP_DIR}/lnmp.conf.local" ]] && source "${LNMP_DIR}/lnmp.conf.local"
 source "${LNMP_DIR}/lib/common.sh"
 source "${LNMP_DIR}/lib/detect.sh"
@@ -127,11 +128,8 @@ fi
 
 # Batch install PHP extensions from config
 _install_php_extensions() {
-    [[ -n "${PHP_Extensions_Install:-}" ]] || return 0
-    log_info "Installing PHP extensions: ${PHP_Extensions_Install}"
-    for ext in ${PHP_Extensions_Install}; do
-        install_extension "$ext"
-    done
+    _queue_legacy_imap_extension
+    install_configured_php_extensions
 }
 
 # Step verification — stop on failure

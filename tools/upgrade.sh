@@ -5,6 +5,7 @@ set -euo pipefail
 LNMP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "${LNMP_DIR}/versions.conf"
 source "${LNMP_DIR}/lnmp.conf"
+# shellcheck source=/dev/null
 [[ -f "${LNMP_DIR}/lnmp.conf.local" ]] && source "${LNMP_DIR}/lnmp.conf.local"
 source "${LNMP_DIR}/lib/common.sh"
 source "${LNMP_DIR}/lib/detect.sh"
@@ -32,9 +33,11 @@ case "$TARGET" in
     php)
         log_info "Upgrading PHP to ${PHP_VER}..."
         source "${LNMP_DIR}/lib/php.sh"
+        source "${LNMP_DIR}/lib/extensions.sh"
 
         systemctl stop php-fpm
         install_php
+        install_configured_php_extensions
         systemctl start php-fpm
 
         log_ok "PHP upgraded to ${PHP_VER}."
