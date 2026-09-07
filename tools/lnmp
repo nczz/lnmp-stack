@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tools/lnmp — Service management command
-# Usage: lnmp {start|stop|restart|reload|status|vhost|ssl|db|firewall|addons|reset-password|kill}
+# Usage: lnmp [--yes|-y] {start|stop|restart|reload|status|vhost|ssl|db|firewall|addons|reset-password|kill}
 
 # Resolve tools directory: same dir as this script, or installed location
 TOOLS_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -127,6 +127,19 @@ lnmp_vhost() {
     bash "$vhost_sh" "$@"
 }
 
+# Parse global flags (--yes/-y) that may appear anywhere on the command line.
+# When present, export LNMP_ASSUME_YES=1 so every subcommand (ssl/db/vhost)
+# runs non-interactively via is_interactive(). Remaining args are preserved
+# and re-passed to the subcommand dispatcher unchanged.
+_lnmp_args=()
+for _arg in "$@"; do
+    case "$_arg" in
+        --yes|-y) export LNMP_ASSUME_YES=1 ;;
+        *)        _lnmp_args+=("$_arg") ;;
+    esac
+done
+set -- "${_lnmp_args[@]}"
+
 case "${1:-}" in
     start)   lnmp_start ;;
     stop)    lnmp_stop ;;
@@ -141,7 +154,7 @@ case "${1:-}" in
     addons)  shift; bash "${TOOLS_DIR}/addons.sh" "$@" ;;
     reset-password) shift; bash "${TOOLS_DIR}/reset_mysql_password.sh" "$@" ;;
     *)
-        echo "Usage: lnmp {start|stop|restart|reload|status|kill|vhost|ssl|db|firewall|addons|reset-password}"
+        echo "Usage: lnmp [--yes|-y] {start|stop|restart|reload|status|kill|vhost|ssl|db|firewall|addons|reset-password}"
         echo ""
         echo "  start          — Start all LNMP services"
         echo "  stop           — Stop all LNMP services"

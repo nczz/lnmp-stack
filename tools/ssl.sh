@@ -7,17 +7,58 @@ ACME_BIN="${ACME_HOME}/acme.sh"
 SSL_DIR="/usr/local/nginx/conf/ssl"
 VHOST_DIR="/usr/local/nginx/conf/vhost"
 
+# Load shared config + helpers (is_interactive, die_code, EX_* codes, Acme_Email).
+# Resolve project dir from this script's location so it works installed or in-repo.
+_LNMP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+[[ -f "${_LNMP_DIR}/lnmp.conf" ]] && source "${_LNMP_DIR}/lnmp.conf"
+# shellcheck source=/dev/null
+[[ -f "${_LNMP_DIR}/lnmp.conf.local" ]] && source "${_LNMP_DIR}/lnmp.conf.local"
+[[ -f "${_LNMP_DIR}/lib/common.sh" ]] && source "${_LNMP_DIR}/lib/common.sh"
+
+# Resolve the ACME registration email from multiple sources, in priority order:
+#   1. explicit argument   2. ACME_EMAIL env   3. Acme_Email in lnmp.conf.local
+# Email is OPTIONAL for acme.sh (Let's Encrypt only uses it for expiry notices),
+# so a missing email is NOT a hard failure — we just register without one.
+_resolve_acme_email() {
+    local email="${1:-}"
+    [[ -z "$email" ]] && email="${ACME_EMAIL:-}"
+    [[ -z "$email" ]] && email="${Acme_Email:-}"
+    printf '%s' "$email"
+}
+
+show_install_usage() {
+    echo "Usage: ssl.sh install <domain> [--domains \"d2 d3\"] [--webroot /path] [--keytype ec-256]"
+}
+
+_require_option_arg() {
+    local opt="$1" value="${2:-}"
+    [[ -n "$value" && "$value" != -* ]] || {
+        show_install_usage
+        die_code "$EX_USAGE" "Missing value for ${opt}."
+    }
+}
+
+
 _ensure_acme() {
     if [[ -s "$ACME_BIN" ]]; then
         return 0
     fi
 
     echo "Installing acme.sh..."
-    local email="${1:-}"
-    [[ -z "$email" ]] && read -r -p "Email for Let's Encrypt registration: " email
-    [[ -n "$email" ]] || { echo "Email required."; exit 1; }
+    local email
+    email="$(_resolve_acme_email "${1:-}")"
+    # Prompt only when interactive; email is optional so never block without it.
+    if [[ -z "$email" ]] && is_interactive; then
+        read -r -p "Email for Let's Encrypt registration (optional, press Enter to skip): " email
+    fi
 
-    curl -sS https://get.acme.sh | sh -s email="$email"
+    if [[ -n "$email" ]]; then
+        curl -sS https://get.acme.sh | sh -s email="$email" \
+            || die_code "$EX_UNAVAILABLE" "Failed to install acme.sh from https://get.acme.sh"
+    else
+        curl -sS https://get.acme.sh | sh \
+            || die_code "$EX_UNAVAILABLE" "Failed to install acme.sh from https://get.acme.sh"
+    fi
     ln -sf ~/.acme.sh "$ACME_HOME"
 
     # Use Let's Encrypt as default CA
@@ -41,23 +82,31 @@ ssl_install() {
     # Parse args
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --keytype)  keytype="$2"; shift 2 ;;
-            --webroot)  webroot="$2"; shift 2 ;;
-            --domains)  more_domains="$2"; shift 2 ;;
-            -*)         shift ;;
-            *)          [[ -z "$domain" ]] && domain="$1"; shift ;;
+            --keytype)  _require_option_arg "$1" "${2:-}"; keytype="$2"; shift 2 ;;
+            --webroot)  _require_option_arg "$1" "${2:-}"; webroot="$2"; shift 2 ;;
+            --domains)  _require_option_arg "$1" "${2:-}"; more_domains="$2"; shift 2 ;;
+            -*)         show_install_usage; die_code "$EX_USAGE" "Unknown option: $1" ;;
+            *)          [[ -z "$domain" ]] && domain="$1" || more_domains="${more_domains:+$more_domains }$1"; shift ;;
         esac
     done
 
-    _ensure_acme
+    # Validate required args BEFORE any side effects (e.g. installing acme.sh).
+    [[ -n "$domain" ]] || { is_interactive && read -r -p "Domain (e.g. example.com): " domain; }
+    [[ -n "$domain" ]] || die_code "$EX_USAGE" "Domain required. Usage: ssl.sh install <domain> [--domains \"d2 d3\"] [--webroot /path]"
 
-    # Interactive fallback
-    [[ -n "$domain" ]] || read -r -p "Domain (e.g. example.com): " domain
-    [[ -n "$domain" ]] || { echo "Domain required."; exit 1; }
 
-    if [[ -z "$more_domains" ]]; then
+    if [[ -z "$more_domains" ]] && is_interactive; then
         read -r -p "More domains (space-separated, or empty): " more_domains
     fi
+    validate_domain "$domain"
+    local -a more_domain_list=()
+    if [[ -n "$more_domains" ]]; then
+        read -r -a more_domain_list <<< "$more_domains"
+        validate_domain_list "${more_domain_list[@]}"
+    fi
+    [[ "$keytype" =~ ^(ec-256|ec-384|2048|3072|4096)$ ]] \
+        || die_code "$EX_USAGE" "Invalid key type '${keytype}'. Use ec-256, ec-384, 2048, 3072, or 4096."
+
 
     if [[ -z "$webroot" ]]; then
         local vhost_conf="${VHOST_DIR}/${domain}.conf"
@@ -66,21 +115,23 @@ ssl_install() {
         fi
         [[ -z "$webroot" ]] && webroot="/home/wwwroot/${domain}"
     fi
+    validate_abs_path "webroot" "$webroot"
+    _ensure_acme
 
-    # Build domain args
-    local domain_args="-d ${domain}"
-    for d in $more_domains; do
-        domain_args+=" -d ${d}"
+
+    local -a domain_args=(-d "$domain")
+    local d
+    for d in "${more_domain_list[@]}"; do
+        domain_args+=(-d "$d")
     done
 
     # Issue certificate (exit 0=success, 2=already exists/skip — both are OK)
     echo "Issuing certificate for ${domain}..."
     local issue_rc=0
-    "$ACME_BIN" --issue ${domain_args} -w "$webroot" --keylength "$keytype" --server letsencrypt \
+    "$ACME_BIN" --issue "${domain_args[@]}" -w "$webroot" --keylength "$keytype" --server letsencrypt \
         || issue_rc=$?
     if [[ $issue_rc -ne 0 && $issue_rc -ne 2 ]]; then
-        echo "Certificate issuance failed (exit code: ${issue_rc})."
-        exit 1
+        die_code "$EX_TEMPFAIL" "Certificate issuance failed (acme.sh exit code: ${issue_rc}). Common causes: DNS for ${domain} not yet propagated, port 80 not reachable, or firewall blocking. Safe to retry after fixing."
     fi
 
     # Install certificate
@@ -102,7 +153,7 @@ ssl_install() {
 
     # Update vhost config (auto-apply in non-interactive, ask in interactive)
     local update_vhost="y"
-    if [[ -t 0 ]]; then
+    if is_interactive; then
         read -r -p "Update Nginx vhost config for SSL? [Y/n]: " update_vhost
     fi
     if [[ ! "${update_vhost}" =~ ^[Nn]$ ]]; then
@@ -126,10 +177,13 @@ ssl_renew() {
 }
 
 ssl_revoke() {
-    _ensure_acme
+    local domain="${1:-}"
+    [[ -n "$domain" ]] || { is_interactive && read -r -p "Domain to revoke: " domain; }
+    [[ -n "$domain" ]] || die_code "$EX_USAGE" "Domain required. Usage: ssl.sh revoke <domain>"
+    validate_domain "$domain"
 
-    read -r -p "Domain to revoke: " domain
-    [[ -n "$domain" ]] || exit 1
+
+    _ensure_acme
 
     "$ACME_BIN" --revoke -d "$domain"
     "$ACME_BIN" --remove -d "$domain"
@@ -150,10 +204,14 @@ ssl_list() {
     echo "=== Expiry Check ==="
     for cert_dir in "${SSL_DIR}"/*/; do
         [[ -f "${cert_dir}fullchain.pem" ]] || continue
-        local domain=$(basename "$cert_dir")
-        local expiry=$(openssl x509 -enddate -noout -in "${cert_dir}fullchain.pem" 2>/dev/null | cut -d= -f2)
-        local expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null || date -j -f "%b %d %T %Y %Z" "$expiry" +%s 2>/dev/null)
-        local now_epoch=$(date +%s)
+        local domain expiry expiry_epoch now_epoch
+        domain=$(basename "$cert_dir")
+        expiry=$(openssl x509 -enddate -noout -in "${cert_dir}fullchain.pem" 2>/dev/null | cut -d= -f2)
+        expiry_epoch=$(date -d "$expiry" +%s 2>/dev/null || date -j -f "%b %d %T %Y %Z" "$expiry" +%s 2>/dev/null) || {
+            log_warn "Unable to parse certificate expiry for ${domain}"
+            continue
+        }
+        now_epoch=$(date +%s)
         local days_left=$(( (expiry_epoch - now_epoch) / 86400 ))
 
         local status="✅"
@@ -165,8 +223,11 @@ ssl_list() {
 }
 
 ssl_self() {
-    read -r -p "Domain for self-signed cert: " domain
-    [[ -n "$domain" ]] || exit 1
+    local domain="${1:-}"
+    [[ -n "$domain" ]] || { is_interactive && read -r -p "Domain for self-signed cert: " domain; }
+    [[ -n "$domain" ]] || die_code "$EX_USAGE" "Domain required. Usage: ssl.sh self <domain>"
+    validate_domain "$domain"
+
 
     local cert_dir="${SSL_DIR}/${domain}"
     mkdir -p "$cert_dir"
@@ -180,18 +241,41 @@ ssl_self() {
     echo "  Key:       ${cert_dir}/key.pem"
     echo "  Fullchain: ${cert_dir}/fullchain.pem"
 
-    read -r -p "Update Nginx vhost config for SSL? [Y/n]: " update_vhost
-    if [[ ! "${update_vhost}" =~ ^[Nn]$ ]]; then
-        _apply_ssl_vhost "$domain" "" "/home/wwwroot/${domain}" "$cert_dir"
+    local vhost_conf="${VHOST_DIR}/${domain}.conf"
+    if [[ -f "$vhost_conf" ]]; then
+        local webroot="/home/wwwroot/${domain}"
+        local configured_root
+        configured_root=$(grep -m1 'root ' "$vhost_conf" | awk '{print $2}' | tr -d ';')
+        [[ -n "$configured_root" ]] && webroot="$configured_root"
+
+        local update_vhost="y"
+        if is_interactive; then
+            read -r -p "Update Nginx vhost config for SSL? [Y/n]: " update_vhost
+        fi
+        if [[ ! "${update_vhost}" =~ ^[Nn]$ ]]; then
+            _apply_ssl_vhost "$domain" "" "$webroot" "$cert_dir"
+        fi
+    else
+        echo "No vhost config found at ${vhost_conf}; certificate created without Nginx changes."
     fi
 }
 
 _apply_ssl_vhost() {
     local domain="$1" more_domains="$2" webroot="$3" cert_dir="$4"
+    local -a more_domain_list=()
     local server_names="$domain"
-    [[ -n "$more_domains" ]] && server_names="${domain} ${more_domains}"
+    if [[ -n "$more_domains" ]]; then
+        read -r -a more_domain_list <<< "$more_domains"
+        server_names="${domain} ${more_domain_list[*]}"
+    fi
 
     local vhost_conf="${VHOST_DIR}/${domain}.conf"
+    [[ -f "$vhost_conf" ]] || die_code "$EX_USAGE" "Vhost config not found: ${vhost_conf}. Create the vhost before installing SSL."
+    validate_domain "$domain"
+    ((${#more_domain_list[@]} == 0)) || validate_domain_list "${more_domain_list[@]}"
+    validate_abs_path "webroot" "$webroot"
+    validate_abs_path "certificate directory" "$cert_dir"
+
 
     # Remove existing SSL block if any
     if grep -q 'listen 443' "$vhost_conf" 2>/dev/null; then
@@ -201,19 +285,24 @@ _apply_ssl_vhost() {
 
     # Detect rewrite rule from existing config
     local rewrite="none"
-    local rewrite_line=$(grep -m1 'include rewrite/' "$vhost_conf" 2>/dev/null | sed 's/.*include //' | tr -d ';')
+    local rewrite_line
+    rewrite_line=$(grep -m1 'include rewrite/' "$vhost_conf" 2>/dev/null | sed 's/.*include //' | tr -d ';')
     [[ -n "$rewrite_line" ]] && rewrite="$rewrite_line"
 
     # Optional: redirect HTTP to HTTPS
     if ! grep -q 'return 301 https' "$vhost_conf" 2>/dev/null; then
-        local do_redirect="y"
-        [[ "${FORCE_REDIRECT:-}" = "y" ]] && do_redirect="y"
-        if [[ "$do_redirect" != "y" && -t 0 ]]; then
-            read -r -p "Redirect HTTP to HTTPS (301)? [Y/n]: " do_redirect
-            [[ -z "$do_redirect" ]] && do_redirect="y"
+        local do_redirect="${FORCE_REDIRECT:-}"
+        if [[ "$do_redirect" != "y" ]]; then
+            if is_interactive; then
+                read -r -p "Redirect HTTP to HTTPS (301)? [Y/n]: " do_redirect
+                [[ -z "$do_redirect" ]] && do_redirect="y"
+            else
+                do_redirect="y"
+            fi
         fi
         if [[ "${do_redirect}" =~ ^[Yy]$ ]]; then
             # Insert redirect after the first 'index' line in the first server block only
+            # shellcheck disable=SC2016 # keep nginx $host/$request_uri literals
             sed -i '0,/^\s*index /{/^\s*index /a\
 \
     return 301 https://$host$request_uri;
@@ -269,9 +358,9 @@ EOF
 case "${1:-}" in
     install)  shift; ssl_install "$@" ;;
     renew)    ssl_renew "${2:-}" ;;
-    revoke)   ssl_revoke ;;
+    revoke)   shift; ssl_revoke "${1:-}" ;;
     list)     ssl_list ;;
-    self)     ssl_self ;;
+    self)     shift; ssl_self "${1:-}" ;;
     *)
         echo "Usage: $0 {install|renew|revoke|list|self}"
         echo ""

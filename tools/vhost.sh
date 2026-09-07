@@ -7,6 +7,13 @@ VHOST_DIR="/usr/local/nginx/conf/vhost"
 WEBROOT_BASE="/home/wwwroot"
 REWRITE_DIR="/usr/local/nginx/conf/rewrite"
 
+# Load shared config + helpers (is_interactive, die_code, EX_* codes).
+_LNMP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+[[ -f "${_LNMP_DIR}/lnmp.conf" ]] && source "${_LNMP_DIR}/lnmp.conf"
+# shellcheck source=/dev/null
+[[ -f "${_LNMP_DIR}/lnmp.conf.local" ]] && source "${_LNMP_DIR}/lnmp.conf.local"
+[[ -f "${_LNMP_DIR}/lib/common.sh" ]] && source "${_LNMP_DIR}/lib/common.sh"
+
 show_add_usage() {
     echo "Usage: vhost.sh add <domain> [options]"
     echo ""
@@ -23,45 +30,79 @@ show_add_usage() {
     echo "  vhost.sh add example.com --domains \"www.example.com\" --rewrite laravel"
 }
 
+_require_option_arg() {
+    local opt="$1" value="${2:-}"
+    [[ -n "$value" && "$value" != -* ]] || {
+        show_add_usage
+        die_code "$EX_USAGE" "Missing value for ${opt}."
+    }
+}
+
+_validate_rewrite() {
+    local rewrite="$1"
+    [[ "$rewrite" =~ ^[A-Za-z0-9_-]+$ ]] \
+        || die_code "$EX_USAGE" "Invalid rewrite rule '${rewrite}'."
+    [[ -f "${REWRITE_DIR}/${rewrite}.conf" ]] \
+        || die_code "$EX_USAGE" "Rewrite rule not found: ${rewrite}"
+}
+
+
 vhost_add() {
     local domain="" more_domains="" webroot="" rewrite="none" enable_ssl="n" force_redirect="n"
 
     # Parse CLI args
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --domains)  more_domains="$2"; shift 2 ;;
-            --webroot)  webroot="$2"; shift 2 ;;
-            --rewrite)  rewrite="$2"; shift 2 ;;
+            --domains)  _require_option_arg "$1" "${2:-}"; more_domains="$2"; shift 2 ;;
+            --webroot)  _require_option_arg "$1" "${2:-}"; webroot="$2"; shift 2 ;;
+            --rewrite)  _require_option_arg "$1" "${2:-}"; rewrite="$2"; shift 2 ;;
             --ssl)      enable_ssl="y"; shift ;;
             --redirect) force_redirect="y"; shift ;;
             --help|-h)  show_add_usage; exit 0 ;;
-            -*)         echo "Unknown option: $1"; show_add_usage; exit 1 ;;
+            -*)         show_add_usage; die_code "$EX_USAGE" "Unknown option: $1" ;;
             *)          [[ -z "$domain" ]] && domain="$1" || more_domains="${more_domains:+$more_domains }$1"; shift ;;
         esac
     done
 
-    # Interactive fallback for missing values
+    # Fill missing values: prompt interactively, or fail fast in non-interactive mode.
     if [[ -z "$domain" ]]; then
-        read -r -p "Domain name (e.g. example.com): " domain
-        [[ -n "$domain" ]] || { echo "Domain cannot be empty."; exit 1; }
+        if is_interactive; then
+            read -r -p "Domain name (e.g. example.com): " domain
+            [[ -n "$domain" ]] || die_code "$EX_USAGE" "Domain cannot be empty."
 
-        read -r -p "More domains (space-separated, or empty): " more_domains
+            read -r -p "More domains (space-separated, or empty): " more_domains
 
-        [[ -n "$webroot" ]] || {
-            local default_root="${WEBROOT_BASE}/${domain}"
-            read -r -p "Web root [${default_root}]: " webroot
-            webroot="${webroot:-$default_root}"
-        }
+            [[ -n "$webroot" ]] || {
+                local default_root="${WEBROOT_BASE}/${domain}"
+                read -r -p "Web root [${default_root}]: " webroot
+                webroot="${webroot:-$default_root}"
+            }
 
-        echo "Available rewrite rules:"
-        ls "${REWRITE_DIR}/" 2>/dev/null | sed 's/\.conf$//' | while read -r r; do echo "  $r"; done
-        read -r -p "Rewrite rule (or 'none') [${rewrite}]: " input_rewrite
-        rewrite="${input_rewrite:-$rewrite}"
+            echo "Available rewrite rules:"
+            local rule_file
+            for rule_file in "${REWRITE_DIR}"/*.conf; do
+                [[ -f "$rule_file" ]] || continue
+                echo "  $(basename "$rule_file" .conf)"
+            done
+            read -r -p "Rewrite rule (or 'none') [${rewrite}]: " input_rewrite
+            rewrite="${input_rewrite:-$rewrite}"
 
-        read -r -p "Enable SSL via Let's Encrypt? [y/N]: " enable_ssl
+            read -r -p "Enable SSL via Let's Encrypt? [y/N]: " enable_ssl
+        else
+            die_code "$EX_USAGE" "Domain required. Usage: vhost.sh add <domain> [--domains \"...\"] [--webroot /path] [--rewrite name] [--ssl] [--redirect]"
+        fi
     fi
 
     webroot="${webroot:-${WEBROOT_BASE}/${domain}}"
+    validate_domain "$domain"
+    local -a more_domain_list=()
+    if [[ -n "$more_domains" ]]; then
+        read -r -a more_domain_list <<< "$more_domains"
+        validate_domain_list "${more_domain_list[@]}"
+    fi
+    validate_abs_path "webroot" "$webroot"
+    _validate_rewrite "$rewrite"
+
 
     # Create webroot
     mkdir -p "$webroot"
@@ -69,7 +110,7 @@ vhost_add() {
 
     # Generate vhost config
     local server_names="$domain"
-    [[ -n "$more_domains" ]] && server_names="${domain} ${more_domains}"
+    ((${#more_domain_list[@]} > 0)) && server_names="${domain} ${more_domain_list[*]}"
 
     local conf_file="${VHOST_DIR}/${domain}.conf"
     cat > "$conf_file" <<EOF
@@ -107,7 +148,8 @@ EOF
 
     # SSL setup (needs working vhost to serve .well-known/acme-challenge/)
     if [[ "${enable_ssl}" =~ ^[Yy]$ ]]; then
-        local script_dir="$(cd "$(dirname "$0")" && pwd)"
+        local script_dir
+        script_dir="$(cd "$(dirname "$0")" && pwd)"
         local -a ssl_args=("$domain" --webroot "$webroot")
         [[ -n "$more_domains" ]] && ssl_args+=(--domains "$more_domains")
         FORCE_REDIRECT="$force_redirect" bash "${script_dir}/ssl.sh" install "${ssl_args[@]}"
@@ -120,8 +162,10 @@ EOF
 
 vhost_del() {
     local domain="${1:-}"
-    [[ -n "$domain" ]] || read -r -p "Domain to remove: " domain
-    [[ -n "$domain" ]] || exit 1
+    [[ -n "$domain" ]] || { is_interactive && read -r -p "Domain to remove: " domain; }
+    [[ -n "$domain" ]] || die_code "$EX_USAGE" "Domain required. Usage: vhost.sh del <domain>"
+
+    validate_domain "$domain"
 
     local conf_file="${VHOST_DIR}/${domain}.conf"
     if [[ -f "$conf_file" ]]; then
@@ -139,9 +183,10 @@ vhost_list() {
     printf "  %-30s %s\n" "------" "-----------"
     for f in "${VHOST_DIR}"/*.conf; do
         [[ -f "$f" ]] || continue
-        local name=$(basename "$f" .conf)
+        local name domains
+        name=$(basename "$f" .conf)
         [[ "$name" = "default" ]] && continue
-        local domains=$(grep -m1 'server_name' "$f" | sed 's/.*server_name //;s/;//')
+        domains=$(grep -m1 'server_name' "$f" | sed 's/.*server_name //;s/;//')
         printf "  %-30s %s\n" "$name" "$domains"
     done
 }

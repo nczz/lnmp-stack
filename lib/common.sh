@@ -10,8 +10,91 @@ LOG_FILE="/root/lnmp-install.log"
 log_info()  { echo -e "${CYAN}[INFO]${NC} $*" | tee -a "$LOG_FILE"; }
 log_ok()    { echo -e "${GREEN}[OK]${NC} $*" | tee -a "$LOG_FILE"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*" | tee -a "$LOG_FILE"; }
-log_err()   { echo -e "${RED}[ERROR]${NC} $*" | tee -a "$LOG_FILE"; }
+log_err()   { echo -e "${RED}[ERROR]${NC} $*" >&2; echo -e "${RED}[ERROR]${NC} $*" >> "$LOG_FILE" 2>/dev/null || true; }
 die()       { log_err "$*"; _die_resume_hint; exit 1; }
+
+###############################################################################
+# Non-interactive / automation support
+#
+# These helpers let every lnmp subcommand run cleanly under an AI agent, CI,
+# cloud-init or `ssh host 'cmd'` (no TTY) while behaving exactly as before for
+# a human at an interactive terminal.
+#
+# Standard exit codes follow sysexits(3) so callers (agents, CI) can branch on
+# failure type instead of parsing text:
+#   EX_USAGE (64)        missing/invalid argument in non-interactive mode
+#   EX_UNAVAILABLE (69)  a required dependency/service is missing
+#   EX_TEMPFAIL (75)     transient failure, safe to retry later
+###############################################################################
+
+# Exported so sourcing scripts (and the subcommands they spawn) share the codes.
+export EX_OK=0
+export EX_USAGE=64
+export EX_UNAVAILABLE=69
+export EX_TEMPFAIL=75
+
+# is_interactive — true only when it is safe to prompt the user.
+# Interactive requires BOTH:
+#   1. stdin is a real terminal ([[ -t 0 ]])
+#   2. the operator has NOT requested non-interactive mode
+#
+# Non-interactive is forced when any of these is set:
+#   NONINTERACTIVE=1 | LNMP_ASSUME_YES=1 | Auto_Install='y' (from lnmp.conf)
+#
+# Rationale (verified): [[ -t 0 ]] alone is unreliable for CI/agent runs where
+# stdin may be neither a TTY nor a pipe; an explicit flag/env is the robust
+# complement. See sysexits(3) and common shell automation guidance.
+is_interactive() {
+    [[ "${NONINTERACTIVE:-}" = "1" ]] && return 1
+    [[ "${LNMP_ASSUME_YES:-}" = "1" ]] && return 1
+    [[ "${Auto_Install:-n}" =~ ^[Yy]$ ]] && return 1
+    [[ -t 0 ]]
+}
+
+# die_code <exit_code> <message...> — like die() but with an explicit sysexits code.
+die_code() {
+    local code="$1"; shift
+    log_err "$*"
+    _die_resume_hint
+    exit "$code"
+}
+
+# validate_domain <domain> — accept DNS names safe for nginx/acme file/config use.
+# HTTP-01 webroot issuance does not support wildcard names, so only ordinary
+# ASCII/punycode labels are accepted.
+validate_domain() {
+    local domain="$1"
+    [[ -n "$domain" ]] || die_code "$EX_USAGE" "Domain cannot be empty."
+    [[ ${#domain} -le 253 ]] || die_code "$EX_USAGE" "Invalid domain '${domain}': too long."
+    [[ "$domain" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$ ]] \
+        || die_code "$EX_USAGE" "Invalid domain '${domain}'. Use an ASCII/punycode DNS name."
+}
+
+validate_domain_list() {
+    local domain
+    for domain in "$@"; do
+        validate_domain "$domain"
+    done
+}
+
+validate_mysql_name() {
+    local kind="$1" value="$2"
+    [[ "$value" =~ ^[A-Za-z0-9_]{1,64}$ ]] \
+        || die_code "$EX_USAGE" "Invalid ${kind} '${value}'. Use 1-64 characters: letters, numbers, underscore."
+}
+
+sql_escape_string() {
+    local value="$1"
+    value=${value//\\/\\\\}
+    value=${value//\'/\'\'}
+    printf '%s' "$value"
+}
+
+validate_abs_path() {
+    local kind="$1" path="$2"
+    [[ "$path" =~ ^/[A-Za-z0-9._~+@%/=-]+$ ]] \
+        || die_code "$EX_USAGE" "Invalid ${kind} '${path}'. Use an absolute path without spaces or shell/nginx metacharacters."
+}
 
 # Print resume hint when installation fails
 _die_resume_hint() {
@@ -99,7 +182,11 @@ tar_cd() {
         # Auto-detect extracted directory
         local extracted
         extracted="$(tar tf "$file" 2>/dev/null | head -1 | cut -d/ -f1)"
-        [[ -n "$extracted" && -d "$extracted" ]] && cd "$extracted"
+        if [[ -n "$extracted" && -d "$extracted" ]]; then
+            cd "$extracted" || die "Cannot cd to extracted directory: ${extracted}"
+        else
+            die "Cannot cd to extracted directory: ${extracted:-unknown}"
+        fi
     fi
 }
 

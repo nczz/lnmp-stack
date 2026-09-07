@@ -20,7 +20,7 @@ All software compiled from source or installed via official binaries — no thir
 - **Security hardening** — SSH hardening, optional fail2ban/firewall, per-vhost open_basedir
 - **systemd native** — All services managed via systemd with auto-restart on failure
 - **100% official sources** — Every download comes from nginx.org, php.net, cdn.mysql.com, etc.
-- **Non-interactive mode** — `--auto` flag for fully automated deployment (cloud-init / Terraform ready)
+- **Non-interactive mode** — `install.sh --auto`, `lnmp --yes`, and env flags for fully automated deployment (cloud-init / Terraform ready)
 
 ## Supported OS
 
@@ -41,7 +41,7 @@ clear error instead of installing an incompatible binary.
 |----------|---------|----------------|
 | Nginx | 1.30.4 | Compile (with OpenSSL 3.5.7) |
 | MariaDB | 11.4.13 LTS | Binary (default) |
-| MySQL | 8.4.9 LTS | Binary (not supported on Ubuntu 26.04) |
+| MySQL | 8.4.11 LTS | Binary (not supported on Ubuntu 26.04) |
 | PHP | 8.4.25 | Compile |
 | Redis | 8.10.1 | Compile (optional) |
 | Docker | Latest | Official script (get.docker.com) |
@@ -144,6 +144,7 @@ the same PECL extension during full installs.
 |-----------|---------|-------------|
 | `Enable_Fail2ban` | `n` | SSH + Nginx brute-force protection |
 | `Firewall` | `n` | `ufw`, `iptables`, or `n` (disabled). Firewall modes open IPv4/IPv6 SSH, HTTP, and HTTPS. |
+| `Acme_Email` | (empty) | Email for Let's Encrypt/acme.sh registration. Optional (used only for expiry notices). Enables unattended SSL issuance. Can also be set via `ACME_EMAIL` env. |
 
 ## Auto-Tuning
 
@@ -215,9 +216,9 @@ Options: `--domains`, `--webroot`, `--rewrite`, `--ssl`, `--redirect`
 lnmp ssl install example.com          # Issue Let's Encrypt certificate
 lnmp ssl renew                        # Renew all certificates
 lnmp ssl renew example.com            # Renew specific domain
-lnmp ssl revoke                       # Revoke and remove certificate
+lnmp ssl revoke example.com           # Revoke and remove certificate
 lnmp ssl list                         # List certs with expiry (✅/⚠️/🔴)
-lnmp ssl self                         # Generate self-signed certificate
+lnmp ssl self example.com             # Generate self-signed certificate
 ```
 
 - Uses Let's Encrypt as default CA (not ZeroSSL)
@@ -225,11 +226,43 @@ lnmp ssl self                         # Generate self-signed certificate
 - DH parameters auto-generated during install
 - HTTPS catch-all with `ssl_reject_handshake` prevents cert leakage via IP
 
-## Database Management
+## Agent / Non-Interactive Usage
+
+All `vhost`, `ssl`, and `db` subcommands are safe to drive from AI agents, CI,
+cloud-init, or `ssh host 'cmd'` — they never hang on a prompt. The same
+commands still prompt interactively when run from a real terminal, so human and
+automated use share one code path.
+
+See **[AGENTS.md](AGENTS.md)** for the full operating contract (SSL
+preconditions, exit codes, recipes).
 
 ```bash
+# Force non-interactive mode (any one of these):
+lnmp --yes vhost add site.com --rewrite wordpress --ssl --redirect
+LNMP_ASSUME_YES=1 lnmp ssl install site.com
+NONINTERACTIVE=1 lnmp db add mydb myuser --password-file /root/.lnmp-mydb.pass
+```
+
+Behavior in non-interactive mode:
+
+- Missing or invalid **required** values exit with a sysexits code on
+  **stderr** instead of hanging: `64` = bad/missing/invalid argument,
+  `69` = dependency unavailable, `75` = transient (retry).
+- Optional values fall back to defaults. Supplied domains, webroots, rewrite
+  names, and database identifiers are validated before root-owned files or SQL
+  are touched.
+- acme.sh registration email is read from `ACME_EMAIL` env or `Acme_Email` in
+  `lnmp.conf.local` (email is optional for Let's Encrypt).
+
+**SSL preconditions** (or issuance returns `75`): DNS `A`/`AAAA` already points
+here, port 80 reachable, vhost exists to serve `/.well-known/acme-challenge/`.
+
+## Database Management
+```bash
 # CLI mode
-lnmp db add mysite myuser 'mypass'    # Create database + user
+install -m 600 /dev/null /root/.lnmp-mysite.pass
+printf '%s\n' 'mypass' > /root/.lnmp-mysite.pass
+lnmp db add mysite myuser --password-file /root/.lnmp-mysite.pass  # Create database + user
 lnmp db del mysite                    # Drop database + user
 lnmp db list                          # List databases and users
 lnmp db export mysite                 # Export to .sql.gz

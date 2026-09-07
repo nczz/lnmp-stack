@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.6 — 2026-09-07
+
+### New Features
+
+- **Agent-safe non-interactive tool mode** — `lnmp --yes` / `-y`, `LNMP_ASSUME_YES=1`, `NONINTERACTIVE=1`, or `Auto_Install='y'` now force `vhost`, `ssl`, and `db` subcommands to fail fast instead of blocking on prompts.
+- **Automation operating contract** — Added `AGENTS.md` with required arguments, sysexits return codes, SSL issuance preconditions, and canonical non-interactive recipes.
+- **Unattended acme.sh registration email** — `ACME_EMAIL` or `Acme_Email` can supply the optional Let's Encrypt account email without a prompt.
+
+### Component Updates
+
+- MySQL 8.4.9 → 8.4.11 LTS (generic Linux binary updated to the current official glibc 2.28 build)
+
+### Bug Fixes
+
+- Validate domains, aliases, rewrite rule names, webroot paths, and database identifiers before writing root-owned Nginx configs or running root database SQL.
+- Build acme.sh domain arguments as an array so domain input cannot be word-split into extra acme.sh options.
+- Return sysexits-style codes for missing automation inputs and transient certificate issuance failures.
+- Preserve interactive prompts for optional SSL vhost/redirect updates while defaulting safely in non-interactive runs.
+- Stop echoing newly supplied database user passwords to automation logs.
+- Avoid exposing the configured MySQL root password in `mysql` / `mysqldump` process arguments by using a temporary 0600 defaults file.
+
 ## v1.5 — 2026-09-07
 
 ### New Features
