@@ -233,8 +233,10 @@ cloud-init, or `ssh host 'cmd'` — they never hang on a prompt. The same
 commands still prompt interactively when run from a real terminal, so human and
 automated use share one code path.
 
-See **[AGENTS.md](AGENTS.md)** for the full operating contract (SSL
-preconditions, exit codes, recipes).
+See command-specific help (`lnmp --help`, `lnmp vhost add --help`,
+`lnmp ssl --help`, `lnmp ssl install --help`, `lnmp db --help`, and
+`lnmp db add --help`) plus **[AGENTS.md](AGENTS.md)** for the full operating
+contract (SSL preconditions, exit codes, recipes).
 
 ```bash
 # Force non-interactive mode (any one of these):
@@ -261,7 +263,7 @@ here, port 80 reachable, vhost exists to serve `/.well-known/acme-challenge/`.
 ```bash
 # CLI mode
 install -m 600 /dev/null /root/.lnmp-mysite.pass
-printf '%s\n' 'mypass' > /root/.lnmp-mysite.pass
+printf '%s\n' 'STRONG_PASSWORD_HERE' > /root/.lnmp-mysite.pass
 lnmp db add mysite myuser --password-file /root/.lnmp-mysite.pass  # Create database + user
 lnmp db del mysite                    # Drop database + user
 lnmp db list                          # List databases and users

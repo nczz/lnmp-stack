@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.6.1 — 2026-09-07
+
+### Bug Fixes
+
+- Strengthen `lnmp`, `vhost`, `ssl`, and `db` help output with agent/CI rules, required arguments, validation allowlists, safe secret handling, SSL preconditions, examples, and exit-code meanings.
+- Add explicit `--help` / `-h` handling for top-level and subcommand-specific help paths so automation can inspect command contracts without triggering side effects.
+
 ## v1.6 — 2026-09-07
 
 ### New Features

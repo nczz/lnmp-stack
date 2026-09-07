@@ -40,6 +40,17 @@ lnmp --yes <subcommand> ...   # or: lnmp -y <subcommand> ...
 `--yes` / `-y` may appear anywhere on the line; it is stripped and exported as
 `LNMP_ASSUME_YES=1` to every subcommand.
 
+Automation can inspect the command contract without side effects:
+
+```bash
+lnmp --help
+lnmp vhost add --help
+lnmp ssl --help
+lnmp ssl install --help
+lnmp db --help
+lnmp db add --help
+```
+
 Input allowlists are intentionally strict before root-owned files or root SQL
 are touched:
 

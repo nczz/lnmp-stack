@@ -42,7 +42,31 @@ _mysql_cmd() {
 }
 
 show_add_usage() {
-    echo "Usage: db.sh add <name> [user] --password-file /path/to/secret"
+    cat <<'EOF'
+Usage:
+  lnmp db add <name> [user] --password-file /path/to/secret
+  db.sh add <name> [user] --password-file /path/to/secret
+
+Required:
+  <name>                    Database name: A-Z, a-z, 0-9, _, max 64 chars.
+  --password-file <file>    First line is used as the user password.
+
+Optional:
+  [user]                    Database user; defaults to <name>. Same name rules.
+  --help, -h                Show this help.
+
+Agent / CI rules:
+  - Use lnmp --yes db add ... --password-file <file>.
+  - Non-interactive mode rejects positional passwords to avoid process-list and
+    shell-history leaks.
+  - Password file must be readable and not group/other-readable, e.g. mode 600.
+  - The supplied password is not echoed to stdout/stderr.
+
+Examples:
+  install -m 600 /dev/null /root/.lnmp-mysite.pass
+  printf '%s\n' 'STRONG_PASSWORD_HERE' > /root/.lnmp-mysite.pass
+  lnmp --yes db add mysite myuser --password-file /root/.lnmp-mysite.pass
+EOF
 }
 
 _require_option_arg() {
@@ -206,20 +230,80 @@ db_export() {
     echo "Exported: ${outfile} ($(du -h "$outfile" | cut -f1))"
 }
 
+show_usage() {
+    cat <<'EOF'
+Usage:
+  lnmp db {add|del|list|import|export}
+  db.sh {add|del|list|import|export}
+
+Commands:
+  add <name> [user] --password-file <file>
+                        Create database and localhost user. See: lnmp db add --help
+  del <name>            Drop database; non-interactive mode also drops same-name user.
+  list                  List databases and non-system users.
+  import <name> <file>  Import .sql or .sql.gz into database.
+  export <name>         Export database to <name>_YYYYmmdd_HHMMSS.sql.gz.
+
+Agent / CI rules:
+  - Use lnmp --yes db ... for deterministic non-interactive execution.
+  - Database/user names are allowlisted to A-Z, a-z, 0-9, _, max 64 chars.
+  - Use --password-file for db add secrets; positional passwords are rejected
+    in non-interactive mode.
+  - Exit 64 = bad/missing/invalid input; 69 = mysql/mysqldump unavailable.
+EOF
+}
+
+has_help_arg() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in --help|-h|help) return 0 ;; esac
+    done
+    return 1
+}
+
+reject_extra_args() {
+    local usage="$1"
+    shift
+    [[ $# -eq 0 ]] && return 0
+    show_usage
+    die_code "$EX_USAGE" "Unexpected argument: $1. Usage: ${usage}"
+}
+
+
+
 case "${1:-}" in
     add)    shift; db_add "$@" ;;
-    del)    shift; db_del "$@" ;;
-    list)   db_list ;;
-    import) shift; db_import "$@" ;;
-    export) shift; db_export "$@" ;;
+    del)
+        shift
+        if has_help_arg "$@"; then echo "Usage: lnmp db del <name>"; exit 0; fi
+        [[ $# -le 1 ]] || { show_usage; die_code "$EX_USAGE" "Unexpected argument: $2"; }
+        db_del "$@"
+        ;;
+    list|ls)
+        shift
+        if has_help_arg "$@"; then echo "Usage: lnmp db list"; exit 0; fi
+        reject_extra_args "lnmp db list" "$@"
+        db_list
+        ;;
+    import)
+        shift
+        if has_help_arg "$@"; then echo "Usage: lnmp db import <name> <file.sql[.gz]>"; exit 0; fi
+        [[ $# -le 2 ]] || { show_usage; die_code "$EX_USAGE" "Unexpected argument: $3"; }
+        db_import "$@"
+        ;;
+    export)
+        shift
+        if has_help_arg "$@"; then echo "Usage: lnmp db export <name>"; exit 0; fi
+        [[ $# -le 1 ]] || { show_usage; die_code "$EX_USAGE" "Unexpected argument: $2"; }
+        db_export "$@"
+        ;;
+    --help|-h|help) show_usage; exit 0 ;;
+    "")
+        show_usage
+        exit 64
+        ;;
     *)
-        echo "Usage: $0 {add|del|list|import|export}"
-        echo ""
-        echo "  add <name> [user] --password-file <file>  — Create database + user"
-        echo "  del [name]                                — Drop database + user"
-        echo "  list                                      — List databases and users"
-        echo "  import [name] [file.sql]                  — Import SQL file (supports .gz)"
-        echo "  export [name]                             — Export database to .sql.gz"
-        exit 1
+        show_usage
+        exit 64
         ;;
 esac

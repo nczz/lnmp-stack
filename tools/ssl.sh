@@ -27,7 +27,34 @@ _resolve_acme_email() {
 }
 
 show_install_usage() {
-    echo "Usage: ssl.sh install <domain> [--domains \"d2 d3\"] [--webroot /path] [--keytype ec-256]"
+    cat <<'EOF'
+Usage:
+  lnmp ssl install <domain> [--domains "d2 d3"] [--webroot /path] [--keytype ec-256]
+  ssl.sh install <domain> [--domains "d2 d3"] [--webroot /path] [--keytype ec-256]
+
+Required:
+  <domain>                 Primary ASCII/punycode DNS name.
+
+Options:
+  --domains "d1 d2"        Additional DNS names on the same certificate.
+  --webroot /path          Existing vhost webroot; default: parsed from vhost
+                           config or /home/wwwroot/<domain>.
+  --keytype type           ec-256 (default), ec-384, 2048, 3072, or 4096.
+  --help, -h               Show this help.
+
+Agent / CI rules:
+  - Use lnmp --yes ssl install ... to guarantee no prompts.
+  - Create the HTTP vhost first. HTTP-01 needs /.well-known/acme-challenge/.
+  - DNS A/AAAA must already point to this host and port 80 must be reachable.
+  - Invalid domain/webroot/keytype exits 64 before acme.sh is installed.
+  - acme.sh install failure exits 69; issuance/DNS/firewall failure exits 75.
+  - Optional account email: ACME_EMAIL env or Acme_Email in lnmp.conf.local.
+
+Examples:
+  lnmp --yes vhost add example.com --rewrite wordpress
+  ACME_EMAIL=admin@example.com lnmp --yes ssl install example.com
+  lnmp --yes ssl install example.com --domains "www.example.com" --webroot /home/wwwroot/example.com
+EOF
 }
 
 _require_option_arg() {
@@ -85,6 +112,7 @@ ssl_install() {
             --keytype)  _require_option_arg "$1" "${2:-}"; keytype="$2"; shift 2 ;;
             --webroot)  _require_option_arg "$1" "${2:-}"; webroot="$2"; shift 2 ;;
             --domains)  _require_option_arg "$1" "${2:-}"; more_domains="$2"; shift 2 ;;
+            --help|-h)  show_install_usage; exit 0 ;;
             -*)         show_install_usage; die_code "$EX_USAGE" "Unknown option: $1" ;;
             *)          [[ -z "$domain" ]] && domain="$1" || more_domains="${more_domains:+$more_domains }$1"; shift ;;
         esac
@@ -354,21 +382,82 @@ EOF
     echo "Nginx vhost updated with SSL."
 }
 
+show_usage() {
+    cat <<'EOF'
+Usage:
+  lnmp ssl {install|renew|revoke|list|self}
+  ssl.sh {install|renew|revoke|list|self}
+
+Commands:
+  install <domain> [options]  Issue and install Let's Encrypt certificate.
+                              See: lnmp ssl install --help
+  renew [domain]              Renew one certificate, or all if omitted.
+  revoke <domain>             Revoke and remove certificate files.
+  list                        List certificates and expiry status.
+  self <domain>               Create self-signed cert; updates vhost only when
+                              the vhost config already exists.
+
+Agent / CI rules:
+  - Use lnmp --yes ssl ... for deterministic non-interactive execution.
+  - Domains must be ASCII/punycode DNS names.
+  - Let's Encrypt install uses HTTP-01: existing vhost, correct DNS, reachable
+    port 80.
+  - Exit 64 = bad/missing/invalid input; 69 = acme unavailable; 75 = issuance
+    tempfail safe to retry after fixing DNS/firewall/reachability.
+EOF
+}
+
+has_help_arg() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in --help|-h|help) return 0 ;; esac
+    done
+    return 1
+}
+
+reject_extra_args() {
+    local usage="$1"
+    shift
+    [[ $# -eq 0 ]] && return 0
+    show_usage
+    die_code "$EX_USAGE" "Unexpected argument: $1. Usage: ${usage}"
+}
+
+
 # --- Main ---
 case "${1:-}" in
     install)  shift; ssl_install "$@" ;;
-    renew)    ssl_renew "${2:-}" ;;
-    revoke)   shift; ssl_revoke "${1:-}" ;;
-    list)     ssl_list ;;
-    self)     shift; ssl_self "${1:-}" ;;
+    renew)
+        shift
+        if has_help_arg "$@"; then echo "Usage: lnmp ssl renew [domain]"; exit 0; fi
+        [[ $# -le 1 ]] || { show_usage; die_code "$EX_USAGE" "Unexpected argument: $2"; }
+        ssl_renew "${1:-}"
+        ;;
+    revoke)
+        shift
+        if has_help_arg "$@"; then echo "Usage: lnmp ssl revoke <domain>"; exit 0; fi
+        [[ $# -le 1 ]] || { show_usage; die_code "$EX_USAGE" "Unexpected argument: $2"; }
+        ssl_revoke "${1:-}"
+        ;;
+    list|ls)
+        shift
+        if has_help_arg "$@"; then echo "Usage: lnmp ssl list"; exit 0; fi
+        reject_extra_args "lnmp ssl list" "$@"
+        ssl_list
+        ;;
+    self)
+        shift
+        if has_help_arg "$@"; then echo "Usage: lnmp ssl self <domain>"; exit 0; fi
+        [[ $# -le 1 ]] || { show_usage; die_code "$EX_USAGE" "Unexpected argument: $2"; }
+        ssl_self "${1:-}"
+        ;;
+    --help|-h|help) show_usage; exit 0 ;;
+    "")
+        show_usage
+        exit 64
+        ;;
     *)
-        echo "Usage: $0 {install|renew|revoke|list|self}"
-        echo ""
-        echo "  install  — Issue & install Let's Encrypt certificate"
-        echo "  renew    — Renew certificate (or all: renew without domain)"
-        echo "  revoke   — Revoke and remove certificate"
-        echo "  list     — List certificates with expiry status"
-        echo "  self     — Generate self-signed certificate"
-        exit 1
+        show_usage
+        exit 64
         ;;
 esac

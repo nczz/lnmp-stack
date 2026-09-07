@@ -127,6 +127,72 @@ lnmp_vhost() {
     bash "$vhost_sh" "$@"
 }
 
+show_usage() {
+    cat <<'EOF'
+Usage:
+  lnmp [--yes|-y] <command> [args]
+  lnmp --help
+
+Global options:
+  --yes, -y   Force non-interactive mode. Commands never prompt; missing or
+              invalid required values exit 64.
+
+Commands:
+  start                 Start Nginx, database, and PHP-FPM
+  stop                  Stop Nginx, database, and PHP-FPM
+  restart               Restart Nginx, database, and PHP-FPM
+  reload                Test and reload Nginx, then reload PHP-FPM
+  status                Show service status, versions, and common ports
+  kill                  Force-kill LNMP processes
+  vhost add|del|list    Manage Nginx virtual hosts
+  ssl install|renew|revoke|list|self
+                        Manage Let's Encrypt and self-signed certificates
+  db add|del|list|import|export
+                        Manage databases; db add uses --password-file in automation
+  firewall ...          Manage ufw/iptables rules
+  addons ...            Manage PHP extensions and optional services
+  reset-password        Reset MySQL/MariaDB root password
+
+Agent / CI rules:
+  - Prefer: lnmp --yes <subcommand> ...
+  - DB secrets: use lnmp --yes db add <db> [user] --password-file <600-file>.
+  - SSL install: create the vhost first; DNS A/AAAA must point here; port 80
+    must be reachable for HTTP-01 validation.
+  - Inputs are allowlisted before root-owned files or root SQL are touched.
+
+Exit codes:
+  0 success | 64 bad/missing/invalid argument | 69 dependency unavailable |
+  75 temporary SSL issuance failure; fix DNS/firewall/reachability then retry.
+
+More help:
+  lnmp vhost add --help
+  lnmp ssl --help
+  lnmp db --help
+  AGENTS.md contains the full automation contract.
+EOF
+}
+
+lnmp_expect_no_args() {
+    local usage="$1"
+    shift
+    case "${1:-}" in
+        --help|-h|help)
+            echo "Usage: ${usage}"
+            exit 0
+            ;;
+        "")
+            return 0
+            ;;
+        *)
+            echo "Unexpected argument: $1" >&2
+            echo "Usage: ${usage}" >&2
+            exit 64
+            ;;
+    esac
+}
+
+
+
 # Parse global flags (--yes/-y) that may appear anywhere on the command line.
 # When present, export LNMP_ASSUME_YES=1 so every subcommand (ssl/db/vhost)
 # runs non-interactively via is_interactive(). Remaining args are preserved
@@ -141,33 +207,25 @@ done
 set -- "${_lnmp_args[@]}"
 
 case "${1:-}" in
-    start)   lnmp_start ;;
-    stop)    lnmp_stop ;;
-    restart) lnmp_restart ;;
-    reload)  lnmp_reload ;;
-    status)  lnmp_status ;;
-    kill)    lnmp_kill ;;
+    start)   shift; lnmp_expect_no_args "lnmp start" "$@"; lnmp_start ;;
+    stop)    shift; lnmp_expect_no_args "lnmp stop" "$@"; lnmp_stop ;;
+    restart) shift; lnmp_expect_no_args "lnmp restart" "$@"; lnmp_restart ;;
+    reload)  shift; lnmp_expect_no_args "lnmp reload" "$@"; lnmp_reload ;;
+    status)  shift; lnmp_expect_no_args "lnmp status" "$@"; lnmp_status ;;
+    kill)    shift; lnmp_expect_no_args "lnmp kill" "$@"; lnmp_kill ;;
     vhost)   shift; lnmp_vhost "$@" ;;
     ssl)     shift; bash "${TOOLS_DIR}/ssl.sh" "$@" ;;
     db)      shift; bash "${TOOLS_DIR}/db.sh" "$@" ;;
     firewall) shift; bash "${TOOLS_DIR}/firewall.sh" "$@" ;;
     addons)  shift; bash "${TOOLS_DIR}/addons.sh" "$@" ;;
-    reset-password) shift; bash "${TOOLS_DIR}/reset_mysql_password.sh" "$@" ;;
+    reset-password) shift; lnmp_expect_no_args "lnmp reset-password" "$@"; bash "${TOOLS_DIR}/reset_mysql_password.sh" "$@" ;;
+    --help|-h|help) show_usage; exit 0 ;;
+    "")
+        show_usage
+        exit 64
+        ;;
     *)
-        echo "Usage: lnmp [--yes|-y] {start|stop|restart|reload|status|kill|vhost|ssl|db|firewall|addons|reset-password}"
-        echo ""
-        echo "  start          — Start all LNMP services"
-        echo "  stop           — Stop all LNMP services"
-        echo "  restart        — Restart all LNMP services"
-        echo "  reload         — Reload Nginx and PHP-FPM configs"
-        echo "  status         — Show service status"
-        echo "  kill           — Force kill all LNMP processes"
-        echo "  vhost          — Virtual host management (add|del|list)"
-        echo "  ssl            — SSL certificate management (install|renew|revoke|list|self)"
-        echo "  db             — Database management (add|del|list|import|export)"
-        echo "  firewall       — Firewall management (status|on|off|allow|deny|list)"
-        echo "  addons         — Addon management (install|uninstall|list)"
-        echo "  reset-password — Reset MySQL root password (from lnmp.conf or interactive)"
-        exit 1
+        show_usage
+        exit 64
         ;;
 esac

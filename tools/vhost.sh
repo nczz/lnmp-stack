@@ -15,19 +15,37 @@ _LNMP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [[ -f "${_LNMP_DIR}/lib/common.sh" ]] && source "${_LNMP_DIR}/lib/common.sh"
 
 show_add_usage() {
-    echo "Usage: vhost.sh add <domain> [options]"
-    echo ""
-    echo "Options:"
-    echo "  --domains \"d1 d2\"   Additional domains (aliases)"
-    echo "  --webroot /path     Custom web root (default: /home/wwwroot/<domain>)"
-    echo "  --rewrite name      Rewrite rule: wordpress, laravel, thinkphp, yii2, none"
-    echo "  --ssl               Enable Let's Encrypt SSL"
-    echo "  --redirect          Force HTTP→HTTPS 301 redirect"
-    echo ""
-    echo "Examples:"
-    echo "  vhost.sh add example.com --rewrite wordpress --ssl"
-    echo "  vhost.sh add example.com --rewrite wordpress --ssl --redirect"
-    echo "  vhost.sh add example.com --domains \"www.example.com\" --rewrite laravel"
+    cat <<'EOF'
+Usage:
+  lnmp vhost add <domain> [options]
+  vhost.sh add <domain> [options]
+
+Required:
+  <domain>                 Primary ASCII/punycode DNS name.
+
+Options:
+  --domains "d1 d2"        Additional ASCII/punycode DNS aliases.
+  --webroot /path          Absolute web root; default: /home/wwwroot/<domain>.
+  --rewrite name           Existing rewrite rule basename: wordpress, laravel,
+                           thinkphp, yii2, discuzx, none.
+  --ssl                    Issue/install Let's Encrypt certificate after vhost
+                           reloads successfully.
+  --redirect               With --ssl, force HTTP -> HTTPS 301 redirect.
+  --help, -h               Show this help.
+
+Agent / CI rules:
+  - Use lnmp --yes vhost add ... to guarantee no prompts.
+  - Missing/invalid domain, alias, webroot, or rewrite exits 64 before writing
+    root-owned Nginx config.
+  - --ssl uses HTTP-01: DNS A/AAAA must point to this host and port 80 must be
+    reachable from the internet before running.
+  - --ssl reloads Nginx once for the HTTP vhost, then calls ssl install.
+
+Examples:
+  lnmp --yes vhost add example.com --rewrite wordpress
+  lnmp --yes vhost add example.com --domains "www.example.com" --rewrite laravel
+  ACME_EMAIL=admin@example.com lnmp --yes vhost add example.com --ssl --redirect
+EOF
 }
 
 _require_option_arg() {
@@ -191,18 +209,63 @@ vhost_list() {
     done
 }
 
+show_usage() {
+    cat <<'EOF'
+Usage:
+  lnmp vhost {add|del|list}
+  vhost.sh {add|del|list}
+
+Commands:
+  add <domain> [options]   Add virtual host. See: lnmp vhost add --help
+  del <domain>             Remove vhost config; preserves webroot.
+  list                     List configured virtual hosts.
+
+Agent / CI rules:
+  - Use lnmp --yes vhost ... for deterministic non-interactive execution.
+  - Missing/invalid required values exit 64 instead of prompting.
+  - Domains must be ordinary ASCII/punycode DNS names.
+EOF
+}
+
+has_help_arg() {
+    local arg
+    for arg in "$@"; do
+        case "$arg" in --help|-h|help) return 0 ;; esac
+    done
+    return 1
+}
+
+reject_extra_args() {
+    local usage="$1"
+    shift
+    [[ $# -eq 0 ]] && return 0
+    show_usage
+    die_code "$EX_USAGE" "Unexpected argument: $1. Usage: ${usage}"
+}
+
+
+
 case "${1:-}" in
     add)  shift; vhost_add "$@" ;;
-    del)  shift; vhost_del "$@" ;;
-    list) vhost_list ;;
+    del)
+        shift
+        if has_help_arg "$@"; then echo "Usage: lnmp vhost del <domain>"; exit 0; fi
+        [[ $# -le 1 ]] || { show_usage; die_code "$EX_USAGE" "Unexpected argument: $2"; }
+        vhost_del "$@"
+        ;;
+    list|ls)
+        shift
+        if has_help_arg "$@"; then echo "Usage: lnmp vhost list"; exit 0; fi
+        reject_extra_args "lnmp vhost list" "$@"
+        vhost_list
+        ;;
+    --help|-h|help) show_usage; exit 0 ;;
+    "")
+        show_usage
+        exit 64
+        ;;
     *)
-        echo "Usage: vhost.sh {add|del|list}"
-        echo ""
-        echo "  add [domain] [options]  — Add virtual host"
-        echo "  del [domain]            — Remove virtual host"
-        echo "  list                    — List virtual hosts"
-        echo ""
-        echo "Run 'vhost.sh add --help' for add options."
-        exit 1
+        show_usage
+        exit 64
         ;;
 esac
