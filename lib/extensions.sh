@@ -168,6 +168,16 @@ install_redis_server() {
     mkdir -p /usr/local/redis/etc /usr/local/redis/var
     cp redis.conf /usr/local/redis/etc/redis.conf
 
+    # Redis 8.10 release tarballs bake active `loadmodule ./modules/*.so`
+    # directives into redis.conf for bundled Redis Stack modules (redisbloom,
+    # redisearch, redisjson, redistimeseries). This installer uses Redis core's
+    # `make install` path, not the module-aware deploy path, so those relative
+    # .so files are not installed under the systemd working directory and Redis
+    # aborts on startup. Comment out only active bundled-module directives; the
+    # example `# loadmodule /path/to/...` lines are already commented and left
+    # untouched.
+    sed -i -E 's|^([[:space:]]*loadmodule[[:space:]]+\./modules/.*)|# \1|' /usr/local/redis/etc/redis.conf
+
     # Basic tuning
     sed -i 's/^daemonize no/daemonize no/' /usr/local/redis/etc/redis.conf
     sed -i 's|^dir \./|dir /usr/local/redis/var|' /usr/local/redis/etc/redis.conf

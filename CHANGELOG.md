@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.6.2 — 2026-09-25
+
+### Bug Fixes
+
+- Fix optional Redis 8.10 standalone service startup by disabling baked Redis Stack module `loadmodule ./modules/...` directives for the project's core-only Redis install path.
+- Correct the README firewall default to match the shipped `Firewall='iptables'` configuration.
+
 ## v1.6.1 — 2026-09-07
 
 ### Bug Fixes

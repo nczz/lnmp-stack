@@ -143,7 +143,7 @@ the same PECL extension during full installs.
 | Parameter | Default | Description |
 |-----------|---------|-------------|
 | `Enable_Fail2ban` | `n` | SSH + Nginx brute-force protection |
-| `Firewall` | `n` | `ufw`, `iptables`, or `n` (disabled). Firewall modes open IPv4/IPv6 SSH, HTTP, and HTTPS. |
+| `Firewall` | `iptables` | `ufw`, `iptables`, or `n` (disabled). Firewall modes open IPv4/IPv6 SSH, HTTP, and HTTPS. |
 | `Acme_Email` | (empty) | Email for Let's Encrypt/acme.sh registration. Optional (used only for expiry notices). Enables unattended SSL issuance. Can also be set via `ACME_EMAIL` env. |
 
 ## Auto-Tuning
