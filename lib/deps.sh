@@ -11,7 +11,7 @@ install_deps() {
 
     # Core packages that work across 22.04 / 24.04 / 26.04
     local pkgs=(
-        build-essential gcc g++ make cmake autoconf automake
+        build-essential gcc g++ make cmake autoconf automake patch
         pkg-config libtool bison re2c
         wget curl ca-certificates gnupg lsb-release
         libxml2-dev libsqlite3-dev libcurl4-openssl-dev libpcre2-dev libicu-dev
@@ -185,43 +185,46 @@ install_docker() {
         return 0
     fi
 
-    log_info "Installing Docker..."
-    curl -fsSL https://get.docker.com | sh -s -- 2>&1 | tee -a "$LOG_FILE"
+    log_info "Installing Docker with pinned installer ${DOCKER_INSTALL_COMMIT}..."
+    download_src "Docker installer" "$DOCKER_INSTALL_URL" "$DOCKER_INSTALL_SHA256"
+    sh "${cur_dir}/src/$(basename "$DOCKER_INSTALL_URL")" 2>&1 | tee -a "$LOG_FILE"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Docker installer failed"
     systemctl enable docker
     systemctl start docker
 
-    # Docker Compose plugin (included in modern docker)
     if ! docker compose version &>/dev/null; then
         apt-get -y install docker-compose-plugin 2>&1 | tee -a "$LOG_FILE"
     fi
 
-    log_ok "Docker $(docker --version | awk '{print $3}') installed."
+    record_installed_version DOCKER_INSTALLER "$DOCKER_INSTALL_COMMIT"
+    log_ok "Docker $(docker --version | awk '{print $3}' | tr -d ',') installed."
 }
 
 install_wp_cli() {
-    [[ "${Enable_WP_CLI:-n}" = 'y' ]] || return 0
+    local force="${1:-n}"
+    [[ "${Enable_WP_CLI:-n}" = 'y' || "$force" = 'y' ]] || return 0
 
-    if [[ -x /usr/local/bin/wp ]]; then
-        if timeout 15 /usr/local/php/bin/php /usr/local/bin/wp --info --allow-root &>/dev/null; then
-            log_info "WP-CLI already installed, skipping."
+    if [[ "$force" != 'y' && -x /usr/local/bin/wp ]]; then
+        local current
+        current=$(timeout 15 /usr/local/php/bin/php /usr/local/bin/wp cli version --allow-root 2>/dev/null | awk '{print $2}')
+        if [[ "$current" = "$WP_CLI_VER" ]]; then
+            log_info "WP-CLI ${WP_CLI_VER} already installed, skipping."
             return 0
         fi
-        log_warn "Existing WP-CLI failed verification; reinstalling."
-        rm -f /usr/local/bin/wp
     fi
 
-    log_info "Installing WP-CLI..."
-    rm -f /usr/local/bin/wp
-    curl -sS -o /usr/local/bin/wp https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
-    chmod +x /usr/local/bin/wp
+    log_info "Installing WP-CLI ${WP_CLI_VER}..."
+    download_src "WP-CLI" "$WP_CLI_URL" "$WP_CLI_SHA256"
+    install -m 0755 "${cur_dir}/src/$(basename "$WP_CLI_URL")" /usr/local/bin/wp
 
-    # Run under a timeout with --allow-root so this verification never hangs
-    # and does not fail with WP-CLI's "running as root" guard.
-    if timeout 15 /usr/local/php/bin/php /usr/local/bin/wp --info --allow-root &>/dev/null; then
-        log_ok "WP-CLI installed."
+    local installed
+    installed=$(timeout 15 /usr/local/php/bin/php /usr/local/bin/wp cli version --allow-root 2>/dev/null | awk '{print $2}')
+    if [[ "$installed" = "$WP_CLI_VER" ]]; then
+        record_installed_version WP_CLI "$WP_CLI_VER"
+        log_ok "WP-CLI ${WP_CLI_VER} installed."
     else
         rm -f /usr/local/bin/wp
-        log_warn "WP-CLI installed but failed verification. Check: /usr/local/php/bin/php /usr/local/bin/wp --info --allow-root"
+        die "WP-CLI verification failed: expected ${WP_CLI_VER}, got ${installed:-unknown}"
     fi
 }
 

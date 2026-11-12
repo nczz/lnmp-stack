@@ -117,46 +117,89 @@ check_root() {
     [[ $EUID -eq 0 ]] || die "This script must be run as root"
 }
 
-# Download file with retry, optional sha256 verification
-# Usage: download_src "Name" "URL" ["sha256"]
+# Download an HTTPS source artifact and require a pinned SHA-256 digest.
+# Usage: download_src "Name" "URL" "sha256"
 download_src() {
     local name="$1" url="$2" sha256="${3:-}"
-    local filename dest
-    filename="$(basename "$url")"
+    local filename dest partial
+
+    [[ "$url" == https://* ]] || die "Refusing non-HTTPS source for ${name}: ${url}"
+    [[ "$sha256" =~ ^[0-9a-fA-F]{64}$ ]] || die "Missing or invalid SHA-256 for ${name}"
+
+    filename="$(basename "${url%%\?*}")"
     dest="${cur_dir}/src/${filename}"
+    partial="${dest}.part"
+    mkdir -p "${cur_dir}/src"
 
     if [[ -f "$dest" ]]; then
-        if [[ -n "$sha256" ]] && verify_sha256 "$dest" "$sha256"; then
-            log_info "${name}: ${filename} [cached]"
-            return 0
-        elif [[ -z "$sha256" ]]; then
-            log_info "${name}: ${filename} [cached]"
+        if verify_sha256 "$dest" "$sha256"; then
+            log_info "${name}: ${filename} [verified cache]"
             return 0
         fi
+        log_warn "${name}: removing cached file with invalid checksum."
         rm -f "$dest"
     fi
 
     log_info "Downloading ${name} from ${url} ..."
     local i
     for i in 1 2 3; do
-        if wget -c --progress=dot:giga --prefer-family=IPv4 --no-check-certificate -T 120 -t 1 -O "$dest" "$url" 2>&1 | tee -a "$LOG_FILE"; then
-            break
+        rm -f "$partial"
+        if wget --https-only --progress=dot:giga --prefer-family=IPv4 \
+            -T 120 -t 1 -O "$partial" "$url" 2>&1 | tee -a "$LOG_FILE"; then
+            if verify_sha256 "$partial" "$sha256"; then
+                mv "$partial" "$dest"
+                log_ok "${name} downloaded and verified."
+                return 0
+            fi
+            log_err "Checksum mismatch: ${name}"
         fi
         log_warn "Retry ${i}/3 for ${name}..."
         sleep 2
     done
 
-    [[ -f "$dest" && -s "$dest" ]] || die "Failed to download ${name}"
-
-    if [[ -n "$sha256" ]]; then
-        verify_sha256 "$dest" "$sha256" || die "Checksum mismatch: ${name}"
-    fi
-    log_ok "${name} downloaded."
+    rm -f "$partial"
+    die "Failed to download and verify ${name}"
 }
 
 verify_sha256() {
-    local file="$1" expected="$2"
-    echo "${expected}  ${file}" | sha256sum -c --quiet 2>/dev/null
+    local file="$1" expected="${2,,}" actual
+    actual=$(sha256sum "$file" 2>/dev/null) || return 1
+    actual="${actual%%[[:space:]]*}"
+    [[ "${actual,,}" = "$expected" ]]
+}
+
+LNMP_STATE_DIR="${LNMP_STATE_DIR:-/var/lib/lnmp}"
+LNMP_VERSION_STATE="${LNMP_VERSION_STATE:-${LNMP_STATE_DIR}/installed-versions}"
+
+record_installed_version() {
+    local key="$1" value="$2" tmp
+    [[ "$key" =~ ^[A-Z0-9_]+$ ]] || die "Invalid version-state key: ${key}"
+    [[ "$value" =~ ^[A-Za-z0-9._:+-]+$ ]] || die "Invalid version-state value for ${key}"
+
+    mkdir -p "$LNMP_STATE_DIR"
+    touch "$LNMP_VERSION_STATE"
+    tmp="${LNMP_VERSION_STATE}.tmp.$$"
+    grep -v "^${key}=" "$LNMP_VERSION_STATE" > "$tmp" || true
+    printf '%s=%s\n' "$key" "$value" >> "$tmp"
+    chmod 0644 "$tmp"
+    mv "$tmp" "$LNMP_VERSION_STATE"
+}
+
+read_installed_version() {
+    local key="$1"
+    [[ -r "$LNMP_VERSION_STATE" ]] || return 1
+    grep "^${key}=" "$LNMP_VERSION_STATE" 2>/dev/null | tail -n 1 | cut -d= -f2-
+}
+
+remove_installed_version() {
+    local key="$1" tmp
+    [[ "$key" =~ ^[A-Z0-9_]+$ ]] || die "Invalid version-state key: ${key}"
+    [[ -f "$LNMP_VERSION_STATE" ]] || return 0
+
+    tmp="${LNMP_VERSION_STATE}.tmp.$$"
+    grep -v "^${key}=" "$LNMP_VERSION_STATE" > "$tmp" || true
+    chmod 0644 "$tmp"
+    mv "$tmp" "$LNMP_VERSION_STATE"
 }
 
 # Extract tarball and cd into it

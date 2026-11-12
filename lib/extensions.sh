@@ -17,38 +17,49 @@ _init_php_ext_dir() {
     PHP_EXT_DIR=$($PHP_CONFIG --extension-dir 2>/dev/null || echo "")
 }
 
-# Extension registry: name -> url_var, configure_opts, system_deps
-declare -A EXT_URL_VAR EXT_CONFIGURE EXT_DEPS || true
+# Extension registry: name -> URL, digest, version, configure options, packages.
+declare -A EXT_URL_VAR EXT_SHA_VAR EXT_VER_VAR EXT_CONFIGURE EXT_DEPS || true
 
 EXT_URL_VAR[redis]='REDIS_EXT_URL'
+EXT_SHA_VAR[redis]='REDIS_EXT_SHA256'
+EXT_VER_VAR[redis]='REDIS_EXT_VER'
 EXT_CONFIGURE[redis]=''
 EXT_DEPS[redis]=''
 
 EXT_URL_VAR[imagick]='IMAGICK_URL'
+EXT_SHA_VAR[imagick]='IMAGICK_SHA256'
+EXT_VER_VAR[imagick]='IMAGICK_VER'
 EXT_CONFIGURE[imagick]=''
 EXT_DEPS[imagick]='libmagickwand-dev'
 
 EXT_URL_VAR[apcu]='APCU_URL'
+EXT_SHA_VAR[apcu]='APCU_SHA256'
+EXT_VER_VAR[apcu]='APCU_VER'
 EXT_CONFIGURE[apcu]=''
 EXT_DEPS[apcu]=''
 
 EXT_URL_VAR[swoole]='SWOOLE_URL'
+EXT_SHA_VAR[swoole]='SWOOLE_SHA256'
+EXT_VER_VAR[swoole]='SWOOLE_VER'
 EXT_CONFIGURE[swoole]='--enable-openssl --enable-sockets --enable-mysqlnd --enable-http2'
 EXT_DEPS[swoole]='libssl-dev libcurl4-openssl-dev'
 
 EXT_URL_VAR[memcached]='MEMCACHED_EXT_URL'
+EXT_SHA_VAR[memcached]='MEMCACHED_EXT_SHA256'
+EXT_VER_VAR[memcached]='MEMCACHED_EXT_VER'
 EXT_CONFIGURE[memcached]='--with-libmemcached-dir=/usr --disable-memcached-sasl'
 EXT_DEPS[memcached]='libmemcached-dev'
 
 EXT_URL_VAR[sodium]='SODIUM_EXT_URL'
+EXT_SHA_VAR[sodium]='SODIUM_EXT_SHA256'
+EXT_VER_VAR[sodium]='SODIUM_EXT_VER'
 EXT_CONFIGURE[sodium]=''
 EXT_DEPS[sodium]='libsodium-dev'
 
-# IMAP: unbundled from PHP core as of PHP 8.4, now a PECL extension.
-# Pass --with-imap=/usr to enable the extension and point it at Ubuntu's
-# c-client prefix; SSL/Kerberos flags match Ubuntu's c-client build options.
-# libc-client2007e-dev provides the c-client library (Ubuntu: universe).
+# IMAP was unbundled from PHP core in PHP 8.4.
 EXT_URL_VAR[imap]='IMAP_EXT_URL'
+EXT_SHA_VAR[imap]='IMAP_EXT_SHA256'
+EXT_VER_VAR[imap]='IMAP_EXT_VER'
 EXT_CONFIGURE[imap]='--with-imap=/usr --with-imap-ssl --with-kerberos'
 EXT_DEPS[imap]='libc-client2007e-dev libkrb5-dev libssl-dev'
 
@@ -67,12 +78,12 @@ list_extensions() {
 # Install a PHP extension by name
 # Usage: install_extension <name>
 install_extension() {
-    local ext="$1"
+    local ext="$1" force="${2:-n}"
     _init_php_ext_dir
 
     [[ -n "${EXT_URL_VAR[$ext]+x}" ]] || die "Unknown extension: ${ext}. Run with 'list' to see available."
 
-    if $PHP_BIN -m 2>/dev/null | grep -i "^${ext}$" >/dev/null; then
+    if [[ "$force" != 'y' ]] && $PHP_BIN -m 2>/dev/null | grep -i "^${ext}$" >/dev/null; then
         log_warn "Extension '${ext}' is already loaded. Skipping."
         return 0
     fi
@@ -90,15 +101,16 @@ install_extension() {
         [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Failed to install dependencies for ${ext}: ${deps}"
     fi
 
-    # Download
+    # Download the pinned PECL release.
     local url_var="${EXT_URL_VAR[$ext]}"
-    local url="${!url_var}"
-    [[ -n "$url" ]] || die "No URL defined for extension: ${ext}"
+    local sha_var="${EXT_SHA_VAR[$ext]}"
+    local ver_var="${EXT_VER_VAR[$ext]}"
+    local url="${!url_var}" sha256="${!sha_var}" version="${!ver_var}"
+    [[ -n "$url" && -n "$sha256" && -n "$version" ]] || die "Incomplete source metadata for extension: ${ext}"
 
     local filename
     filename="$(basename "$url")"
-    download_src "${ext}" "$url"
-
+    download_src "${ext}" "$url" "$sha256"
     # Extract
     cd "${cur_dir:?lib/common.sh must be sourced before lib/extensions.sh}/src" || die "Cannot cd to ${cur_dir}/src"
     local dirname="${filename%.tgz}"
@@ -125,11 +137,13 @@ install_extension() {
     local ini_file="${PHP_INI_SCAN_DIR}/${ext}.ini"
     echo "extension=${ext}.so" > "$ini_file"
 
-    # Verify (avoid grep -q which triggers SIGPIPE under pipefail)
+    # Verify (avoid grep -q which triggers SIGPIPE under pipefail).
     if $PHP_BIN -m 2>/dev/null | grep -i "^${ext}$" >/dev/null; then
-        log_ok "Extension '${ext}' installed and loaded."
+        local state_key="PHP_EXT_${ext^^}"
+        record_installed_version "$state_key" "$version"
+        log_ok "Extension '${ext}' ${version} installed and loaded."
     else
-        log_err "Extension '${ext}' installed but failed to load. Check: php -m"
+        die "Extension '${ext}' installed but failed to load. Check: php -m"
     fi
 }
 
@@ -155,61 +169,71 @@ uninstall_extension() {
     log_ok "Extension '${ext}' removed. Restart PHP-FPM to apply."
 }
 
-# Install Redis server (standalone, not PHP extension)
+# Install or upgrade Redis server (standalone, not PHP extension).
 install_redis_server() {
-    log_info "=== Installing Redis ${REDIS_VER} ==="
+    local mode="${1:-install}"
+    log_info "=== ${mode^}ing Redis ${REDIS_VER} ==="
 
-    download_src "Redis" "$REDIS_URL"
+    download_src "Redis" "$REDIS_URL" "$REDIS_SHA256"
     tar_cd "redis-${REDIS_VER}.tar.gz" "redis-${REDIS_VER}"
 
-    make -j"$(nproc)" PREFIX=/usr/local/redis install 2>&1 | tee -a "$LOG_FILE"
+    make -j"$(nproc)" 2>&1 | tee -a "$LOG_FILE"
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Redis build failed"
+    if [[ "$mode" = 'upgrade' ]]; then
+        systemctl stop redis || die "Cannot stop Redis for deployment."
+    fi
+    make PREFIX=/usr/local/redis install 2>&1 | tee -a "$LOG_FILE"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Redis installation failed"
 
-    mkdir -p /usr/local/redis/etc /usr/local/redis/var
-    cp redis.conf /usr/local/redis/etc/redis.conf
+    if [[ "$mode" = 'install' ]]; then
+        mkdir -p /usr/local/redis/etc /usr/local/redis/var
+        cp redis.conf /usr/local/redis/etc/redis.conf
 
-    # Redis 8.10 release tarballs bake active `loadmodule ./modules/*.so`
-    # directives into redis.conf for bundled Redis Stack modules (redisbloom,
-    # redisearch, redisjson, redistimeseries). This installer uses Redis core's
-    # `make install` path, not the module-aware deploy path, so those relative
-    # .so files are not installed under the systemd working directory and Redis
-    # aborts on startup. Comment out only active bundled-module directives; the
-    # example `# loadmodule /path/to/...` lines are already commented and left
-    # untouched.
-    sed -i -E 's|^([[:space:]]*loadmodule[[:space:]]+\./modules/.*)|# \1|' /usr/local/redis/etc/redis.conf
+        # The core-only install does not deploy bundled Redis Stack modules.
+        sed -i -E 's|^([[:space:]]*loadmodule[[:space:]]+\./modules/.*)|# \1|' /usr/local/redis/etc/redis.conf
+        sed -i 's/^daemonize no/daemonize no/' /usr/local/redis/etc/redis.conf
+        sed -i 's|^dir \./|dir /usr/local/redis/var|' /usr/local/redis/etc/redis.conf
+        sed -i 's/^# bind 127.0.0.1/bind 127.0.0.1/' /usr/local/redis/etc/redis.conf
 
-    # Basic tuning
-    sed -i 's/^daemonize no/daemonize no/' /usr/local/redis/etc/redis.conf
-    sed -i 's|^dir \./|dir /usr/local/redis/var|' /usr/local/redis/etc/redis.conf
-    sed -i 's/^# bind 127.0.0.1/bind 127.0.0.1/' /usr/local/redis/etc/redis.conf
-
-    cp "${cur_dir}/systemd/redis.service" /etc/systemd/system/redis.service
-    systemctl daemon-reload
-    systemctl enable redis
+        cp "${cur_dir}/systemd/redis.service" /etc/systemd/system/redis.service
+        systemctl daemon-reload
+        systemctl enable redis
+    fi
 
     ln -sf /usr/local/redis/bin/redis-cli /usr/bin/redis-cli
     ln -sf /usr/local/redis/bin/redis-server /usr/bin/redis-server
-
-    log_ok "Redis ${REDIS_VER} installed."
+    record_installed_version REDIS "$REDIS_VER"
+    log_ok "Redis ${REDIS_VER} ${mode} completed."
 }
 
-# Install Memcached server
+# Install or upgrade Memcached server.
 install_memcached_server() {
-    log_info "=== Installing Memcached ${MEMCACHED_VER} ==="
+    local mode="${1:-install}"
+    log_info "=== ${mode^}ing Memcached ${MEMCACHED_VER} ==="
 
     wait_apt_lock
     apt-get -y install --no-install-recommends libevent-dev libsasl2-dev 2>&1 | tee -a "$LOG_FILE"
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Failed to install Memcached build dependencies"
 
-    download_src "Memcached" "$MEMCACHED_URL"
+    download_src "Memcached" "$MEMCACHED_URL" "$MEMCACHED_SHA256"
     tar_cd "memcached-${MEMCACHED_VER}.tar.gz" "memcached-${MEMCACHED_VER}"
 
-    ./configure --prefix=/usr/local/memcached --enable-sasl
-    make_install
+    ./configure --prefix=/usr/local/memcached --enable-sasl 2>&1 | tee -a "$LOG_FILE"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Memcached configure failed"
+    make -j"$(nproc)" 2>&1 | tee -a "$LOG_FILE"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Memcached build failed"
+    if [[ "$mode" = 'upgrade' ]]; then
+        systemctl stop memcached || die "Cannot stop Memcached for deployment."
+    fi
+    make install 2>&1 | tee -a "$LOG_FILE"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Memcached installation failed"
     ln -sf /usr/local/memcached/bin/memcached /usr/bin/memcached
-    cp "${cur_dir}/systemd/memcached.service" /etc/systemd/system/memcached.service
-    systemctl daemon-reload
-    systemctl enable memcached
+    if [[ "$mode" = 'install' ]]; then
+        cp "${cur_dir}/systemd/memcached.service" /etc/systemd/system/memcached.service
+        systemctl daemon-reload
+        systemctl enable memcached
+    fi
 
-    log_ok "Memcached ${MEMCACHED_VER} installed."
+    record_installed_version MEMCACHED "$MEMCACHED_VER"
+    log_ok "Memcached ${MEMCACHED_VER} ${mode} completed."
 }

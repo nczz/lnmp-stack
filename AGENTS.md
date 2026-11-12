@@ -49,6 +49,8 @@ lnmp ssl --help
 lnmp ssl install --help
 lnmp db --help
 lnmp db add --help
+lnmp upgrade --help
+lnmp upgrade plan
 ```
 
 Input allowlists are intentionally strict before root-owned files or root SQL
@@ -148,6 +150,25 @@ lnmp --yes ssl install site.example.com
 lnmp --yes ssl install site.example.com --domains "www.example.com"
 ```
 
+### Inventory and apply pinned security upgrades
+```bash
+# Read-only inventory; safe in monitoring/CI.
+lnmp upgrade plan
+
+# Explicit selection:
+lnmp --yes upgrade apply nginx php
+
+# Every installed component marked OUTDATED; optional missing components stay absent.
+lnmp --yes upgrade apply outdated
+```
+
+`apply` never downgrades a component whose runtime version is ahead of the
+repository target. Core upgrades keep rollback copies under
+`/var/backups/lnmp/`. A database upgrade additionally requires
+`/root/.my.cnf`, creates a compressed logical dump before stopping the service,
+and retains the previous binary prefix beside the live prefix for atomic
+rollback.
+
 ### Create a database + user
 ```bash
 install -m 600 /dev/null /root/.lnmp-mydb.pass
@@ -187,6 +208,7 @@ When you cannot prompt, these MUST be passed as arguments or the command exits `
 | `db del <name>` | `<name>` (user is dropped too, no confirmation prompt) |
 | `db import <name> <file>` | `<name>` and an existing `<file>` |
 | `db export <name>` | `<name>` |
+| `upgrade apply <selection>` | `outdated`, `all`, or one or more component names; an empty selection exits `64` |
 
 Optional values (extra domains, webroot, rewrite, redirect choice) safely fall
 back to sensible defaults when not supplied, but supplied values must pass the
@@ -194,7 +216,30 @@ allowlists in §1.
 
 ---
 
-## 7. Human compatibility (unchanged)
+## 7. Upgrade safety contract
+
+`lnmp upgrade plan` is read-only and does not require root. `apply` requires
+root and accepts these component names:
+
+```text
+nginx php db redis memcached composer wp-cli acme
+ext:redis ext:imagick ext:apcu ext:swoole ext:memcached ext:sodium ext:imap
+phpmyadmin (legacy vulnerable deployment removal only)
+```
+
+`outdated` and `all` mean the same conservative operation: upgrade only
+installed components marked `OUTDATED`. They do not install missing optional
+components. A selected `AHEAD` component is rejected rather than downgraded.
+The legacy `phpmyadmin` target creates a root-only backup and removes the
+web-served copy; the current upstream release has no complete security fix.
+For database changes, preserve both the logical dump and previous binary
+prefix until application checks pass. Binary rollback is best-effort after
+database metadata migration; the logical dump is the authoritative recovery
+path.
+
+---
+
+## 8. Human compatibility (unchanged)
 
 Run any command **without** arguments from a real terminal and it prompts
 interactively exactly as before. The non-interactive guards only take effect

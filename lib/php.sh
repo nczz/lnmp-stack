@@ -21,9 +21,11 @@ _queue_legacy_imap_extension() {
 }
 
 install_php() {
-    log_info "=== Installing PHP ${PHP_VER} ==="
+    local mode="${1:-install}"
+    [[ "$mode" = 'install' || "$mode" = 'upgrade' ]] || die "Invalid PHP install mode: ${mode}"
+    log_info "=== ${mode^}ing PHP ${PHP_VER} ==="
 
-    download_src "PHP" "$PHP_URL"
+    download_src "PHP" "$PHP_URL" "$PHP_SHA256"
     tar_cd "php-${PHP_VER}.tar.xz" "php-${PHP_VER}"
 
     local php_configure_args=(
@@ -89,39 +91,40 @@ install_php() {
     ./configure "${php_configure_args[@]}" 2>&1 | tee -a "$LOG_FILE"
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "PHP configure failed"
 
-    make_install
+    make -j"$(nproc)" 2>&1 | tee -a "$LOG_FILE"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || die "PHP build failed"
+    if [[ "$mode" = 'upgrade' ]]; then
+        systemctl stop php-fpm || die "Cannot stop PHP-FPM for deployment."
+    fi
+    make install 2>&1 | tee -a "$LOG_FILE"
+    [[ ${PIPESTATUS[0]} -eq 0 ]] || die "PHP installation failed"
 
-    # Setup config directories
-    mkdir -p /usr/local/php/etc/php.d
+    if [[ "$mode" = 'install' ]]; then
+        mkdir -p /usr/local/php/etc/php.d
+        _deploy_php_conf
+        _deploy_phpfpm_conf
+        mkdir -p /usr/local/php/var/run
 
-    _deploy_php_conf
-    _deploy_phpfpm_conf
+        cp "${cur_dir:?lib/common.sh must be sourced before lib/php.sh}/systemd/php-fpm.service" /etc/systemd/system/php-fpm.service
+        systemctl daemon-reload
+        systemctl enable php-fpm
+    fi
 
-    # Ensure runtime directories
-    mkdir -p /usr/local/php/var/run
+    _enforce_php_security_baseline
+    _remove_generated_phpinfo
 
-    # Install systemd unit
-    cp "${cur_dir:?lib/common.sh must be sourced before lib/php.sh}/systemd/php-fpm.service" /etc/systemd/system/php-fpm.service
-    systemctl daemon-reload
-    systemctl enable php-fpm
-
-    # Symlinks
     ln -sf /usr/local/php/bin/php /usr/bin/php
     ln -sf /usr/local/php/bin/phpize /usr/bin/phpize
     ln -sf /usr/local/php/bin/php-config /usr/bin/php-config
     ln -sf /usr/local/php/bin/pecl /usr/bin/pecl
     ln -sf /usr/local/php/sbin/php-fpm /usr/bin/php-fpm
 
-    # Install Composer
-    [[ "${Enable_Composer:-n}" = 'y' ]] && _install_composer
+    if [[ "$mode" = 'install' ]]; then
+        [[ "${Enable_Composer:-n}" = 'y' ]] && _install_composer
+    fi
 
-    # phpMyAdmin
-    [[ "${Enable_phpMyAdmin:-n}" = 'y' ]] && _install_phpmyadmin
-
-    # phpinfo for verification
-    echo "<?php phpinfo(); ?>" > "${Default_Website_Dir:-/home/wwwroot/default}/phpinfo.php"
-
-    log_ok "PHP ${PHP_VER} installed."
+    record_installed_version PHP "$PHP_VER"
+    log_ok "PHP ${PHP_VER} ${mode} completed."
 }
 
 _deploy_php_conf() {
@@ -150,6 +153,30 @@ opcache.save_comments=1
 EOF
 }
 
+_enforce_php_security_baseline() {
+    local security_ini='/usr/local/php/etc/php.d/99-lnmp-security.ini'
+    mkdir -p /usr/local/php/etc/php.d
+    cat > "$security_ini" <<'EOF'
+; PHP's 2026-10-23 advisory recommends disabling this feature until a release
+; containing the complete CVE-2026-115560 fix is available.
+session.upload_progress.enabled=0
+EOF
+    if ! /usr/local/php/bin/php -r \
+        'exit(ini_get("session.upload_progress.enabled") === "0" ? 0 : 1);'; then
+        die "PHP security baseline verification failed: session upload progress is enabled."
+    fi
+}
+
+_remove_generated_phpinfo() {
+    local phpinfo="${Default_Website_Dir:-/home/wwwroot/default}/phpinfo.php"
+    if [[ -f "$phpinfo" ]] \
+        && [[ "$(wc -l < "$phpinfo")" -eq 1 ]] \
+        && grep -Fqx '<?php phpinfo(); ?>' "$phpinfo"; then
+        rm -f "$phpinfo" || die "Cannot remove installer-generated phpinfo.php."
+        log_ok "Removed installer-generated public phpinfo.php."
+    fi
+}
+
 _deploy_phpfpm_conf() {
     sed -e "s|{{MAX_CHILDREN}}|${PHP_FPM_MAX_CHILDREN}|g" \
         -e "s|{{START_SERVERS}}|${PHP_FPM_START_SERVERS}|g" \
@@ -163,39 +190,22 @@ _deploy_phpfpm_conf() {
 }
 
 _install_composer() {
-    log_info "Installing Composer..."
-    curl -sS --connect-timeout 30 -m 60 https://getcomposer.org/installer \
-        | /usr/local/php/bin/php -- --install-dir=/usr/local/bin --filename=composer 2>&1 | tee -a "$LOG_FILE"
-    if [[ -x /usr/local/bin/composer ]]; then
-        log_ok "Composer installed."
-    else
-        log_warn "Composer installation failed. Install manually later."
-    fi
-}
-
-_install_phpmyadmin() {
-    local dest="${Default_Website_Dir:-/home/wwwroot/default}/phpmyadmin"
-
-    if [[ -d "$dest" ]]; then
-        log_info "phpMyAdmin already exists at ${dest}, skipping."
-        return 0
+    local force="${1:-n}"
+    if [[ "$force" != 'y' && -x /usr/local/bin/composer ]]; then
+        local current
+        current=$(/usr/local/php/bin/php /usr/local/bin/composer --version --no-ansi 2>/dev/null | awk '{print $3}')
+        if [[ "$current" = "$COMPOSER_VER" ]]; then
+            log_info "Composer ${COMPOSER_VER} already installed, skipping."
+            return 0
+        fi
     fi
 
-    log_info "Installing phpMyAdmin ${PHPMYADMIN_VER}..."
-    download_src "phpMyAdmin" "$PHPMYADMIN_URL"
-
-    local filename
-    filename="$(basename "$PHPMYADMIN_URL")"
-    cd "${cur_dir}/src" || die "Cannot cd to ${cur_dir}/src"
-    tar Jxf "$filename"
-    mv "phpMyAdmin-${PHPMYADMIN_VER}-all-languages" "$dest"
-
-    # Generate blowfish secret
-    local secret
-    secret="$(openssl rand -hex 16)"
-    cp "${dest}/config.sample.inc.php" "${dest}/config.inc.php"
-    sed -i "s|\$cfg\['blowfish_secret'\] = ''|\$cfg['blowfish_secret'] = '${secret}'|" "${dest}/config.inc.php"
-
-    chown -R www:www "$dest"
-    log_ok "phpMyAdmin installed at http://<IP>/phpmyadmin/"
+    log_info "Installing Composer ${COMPOSER_VER}..."
+    download_src "Composer" "$COMPOSER_URL" "$COMPOSER_SHA256"
+    install -m 0755 "${cur_dir}/src/$(basename "$COMPOSER_URL")" /usr/local/bin/composer
+    local installed
+    installed=$(/usr/local/php/bin/php /usr/local/bin/composer --version --no-ansi 2>/dev/null | awk '{print $3}')
+    [[ "$installed" = "$COMPOSER_VER" ]] || die "Composer verification failed: expected ${COMPOSER_VER}, got ${installed:-unknown}"
+    record_installed_version COMPOSER "$COMPOSER_VER"
+    log_ok "Composer ${COMPOSER_VER} installed."
 }

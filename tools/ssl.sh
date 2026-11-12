@@ -7,9 +7,10 @@ ACME_BIN="${ACME_HOME}/acme.sh"
 SSL_DIR="/usr/local/nginx/conf/ssl"
 VHOST_DIR="/usr/local/nginx/conf/vhost"
 
-# Load shared config + helpers (is_interactive, die_code, EX_* codes, Acme_Email).
+# Load pinned versions, shared config, and helpers.
 # Resolve project dir from this script's location so it works installed or in-repo.
 _LNMP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${_LNMP_DIR}/versions.conf"
 [[ -f "${_LNMP_DIR}/lnmp.conf" ]] && source "${_LNMP_DIR}/lnmp.conf"
 # shellcheck source=/dev/null
 [[ -f "${_LNMP_DIR}/lnmp.conf.local" ]] && source "${_LNMP_DIR}/lnmp.conf.local"
@@ -67,40 +68,47 @@ _require_option_arg() {
 
 
 _ensure_acme() {
-    if [[ -s "$ACME_BIN" ]]; then
+    local force="${2:-n}"
+    if [[ -s "$ACME_BIN" && "$force" != 'y' ]]; then
         return 0
     fi
 
-    echo "Installing acme.sh..."
-    local email
+    echo "Installing pinned acme.sh ${ACME_SH_VER}..."
+    local email source_dir filename
     email="$(_resolve_acme_email "${1:-}")"
     # Prompt only when interactive; email is optional so never block without it.
     if [[ -z "$email" ]] && is_interactive; then
         read -r -p "Email for Let's Encrypt registration (optional, press Enter to skip): " email
     fi
 
-    if [[ -n "$email" ]]; then
-        curl -sS https://get.acme.sh | sh -s email="$email" \
-            || die_code "$EX_UNAVAILABLE" "Failed to install acme.sh from https://get.acme.sh"
-    else
-        curl -sS https://get.acme.sh | sh \
-            || die_code "$EX_UNAVAILABLE" "Failed to install acme.sh from https://get.acme.sh"
-    fi
-    ln -sf ~/.acme.sh "$ACME_HOME"
+    download_src "acme.sh" "$ACME_SH_URL" "$ACME_SH_SHA256"
+    filename="$(basename "$ACME_SH_URL")"
+    source_dir="${cur_dir}/src/acme.sh-${ACME_SH_VER}"
+    rm -rf "$source_dir"
+    tar -xzf "${cur_dir}/src/${filename}" -C "${cur_dir}/src" \
+        || die_code "$EX_UNAVAILABLE" "Failed to extract pinned acme.sh ${ACME_SH_VER}"
 
-    # Use Let's Encrypt as default CA
-    "$ACME_BIN" --set-default-ca --server letsencrypt
+    local -a install_args=(--install --home "$ACME_HOME" --nocron)
+    [[ -n "$email" ]] && install_args+=(--accountemail "$email")
+    ( cd "$source_dir" && ./acme.sh "${install_args[@]}" ) \
+        || die_code "$EX_UNAVAILABLE" "Failed to install pinned acme.sh ${ACME_SH_VER}"
+    [[ -s "$ACME_BIN" ]] \
+        || die_code "$EX_UNAVAILABLE" "acme.sh installation did not create ${ACME_BIN}"
 
-    # Auto-upgrade
-    "$ACME_BIN" --upgrade --auto-upgrade
+    # Use Let's Encrypt as default CA. Updates are performed explicitly through
+    # `lnmp upgrade apply acme`, never by an unpinned upstream auto-update.
+    "$ACME_BIN" --home "$ACME_HOME" --set-default-ca --server letsencrypt \
+        || die_code "$EX_UNAVAILABLE" "Failed to configure acme.sh default CA."
 
-    # Ensure cron job for auto-renewal
+    # Ensure cron job for auto-renewal.
     if ! crontab -l 2>/dev/null | grep -q 'acme.sh'; then
-        (crontab -l 2>/dev/null; echo "0 3 * * * \"$ACME_BIN\" --cron --home \"$ACME_HOME\" --reloadcmd \"systemctl reload nginx\" > /dev/null 2>&1") | crontab -
+        { crontab -l 2>/dev/null || true; echo "0 3 * * * \"$ACME_BIN\" --cron --home \"$ACME_HOME\" --reloadcmd \"systemctl reload nginx\" > /dev/null 2>&1"; } | crontab -
         echo "Auto-renewal cron job installed (daily 3:00 AM)."
     fi
 
-    echo "acme.sh installed to ${ACME_HOME}"
+    record_installed_version ACME_SH "$ACME_SH_VER"
+    rm -rf "$source_dir"
+    echo "acme.sh ${ACME_SH_VER} installed to ${ACME_HOME}"
 }
 
 ssl_install() {
@@ -156,7 +164,8 @@ ssl_install() {
     # Issue certificate (exit 0=success, 2=already exists/skip — both are OK)
     echo "Issuing certificate for ${domain}..."
     local issue_rc=0
-    "$ACME_BIN" --issue "${domain_args[@]}" -w "$webroot" --keylength "$keytype" --server letsencrypt \
+    "$ACME_BIN" --home "$ACME_HOME" --issue "${domain_args[@]}" \
+        -w "$webroot" --keylength "$keytype" --server letsencrypt \
         || issue_rc=$?
     if [[ $issue_rc -ne 0 && $issue_rc -ne 2 ]]; then
         die_code "$EX_TEMPFAIL" "Certificate issuance failed (acme.sh exit code: ${issue_rc}). Common causes: DNS for ${domain} not yet propagated, port 80 not reachable, or firewall blocking. Safe to retry after fixing."
@@ -169,7 +178,7 @@ ssl_install() {
     local ecc_flag=""
     [[ "$keytype" == ec-* ]] && ecc_flag="--ecc"
 
-    "$ACME_BIN" --install-cert -d "$domain" $ecc_flag \
+    "$ACME_BIN" --home "$ACME_HOME" --install-cert -d "$domain" $ecc_flag \
         --key-file "${cert_dir}/key.pem" \
         --fullchain-file "${cert_dir}/fullchain.pem" \
         --reloadcmd "systemctl reload nginx"
@@ -195,10 +204,10 @@ ssl_renew() {
     local domain="${1:-}"
     if [[ -n "$domain" ]]; then
         echo "Renewing certificate for ${domain}..."
-        "$ACME_BIN" --renew -d "$domain" --force
+        "$ACME_BIN" --home "$ACME_HOME" --renew -d "$domain" --force
     else
         echo "Renewing all certificates..."
-        "$ACME_BIN" --renew-all
+        "$ACME_BIN" --home "$ACME_HOME" --renew-all
     fi
     systemctl reload nginx
     echo "Done."
@@ -213,8 +222,8 @@ ssl_revoke() {
 
     _ensure_acme
 
-    "$ACME_BIN" --revoke -d "$domain"
-    "$ACME_BIN" --remove -d "$domain"
+    "$ACME_BIN" --home "$ACME_HOME" --revoke -d "$domain"
+    "$ACME_BIN" --home "$ACME_HOME" --remove -d "$domain"
 
     local cert_dir="${SSL_DIR}/${domain}"
     [[ -d "$cert_dir" ]] && rm -rf "$cert_dir"
@@ -226,7 +235,7 @@ ssl_revoke() {
 ssl_list() {
     _ensure_acme
     echo "=== Installed Certificates ==="
-    "$ACME_BIN" --list 2>/dev/null
+    "$ACME_BIN" --home "$ACME_HOME" --list 2>/dev/null
 
     echo ""
     echo "=== Expiry Check ==="
@@ -396,6 +405,7 @@ Commands:
   list                        List certificates and expiry status.
   self <domain>               Create self-signed cert; updates vhost only when
                               the vhost config already exists.
+  client-upgrade              Install the repository-pinned acme.sh release.
 
 Agent / CI rules:
   - Use lnmp --yes ssl ... for deterministic non-interactive execution.
@@ -450,6 +460,12 @@ case "${1:-}" in
         if has_help_arg "$@"; then echo "Usage: lnmp ssl self <domain>"; exit 0; fi
         [[ $# -le 1 ]] || { show_usage; die_code "$EX_USAGE" "Unexpected argument: $2"; }
         ssl_self "${1:-}"
+        ;;
+    client-upgrade)
+        shift
+        reject_extra_args "lnmp ssl client-upgrade" "$@"
+        check_root
+        _ensure_acme "" y
         ;;
     --help|-h|help) show_usage; exit 0 ;;
     "")

@@ -2,6 +2,37 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.0 — 2026-11-12
+
+### Security and Supply Chain
+
+- Require HTTPS and a pinned SHA-256 digest for every downloaded source archive, PHAR, installer, PECL package, OpenSSL patch, and acme.sh release; invalid cached artifacts are deleted and fetched again.
+- Remove `wget --no-check-certificate`, floating Composer/WP-CLI/acme.sh installers, acme.sh auto-update, and the floating Docker installer URL. acme.sh and Docker installer updates now use repository-pinned upstream artifacts.
+- Remove unused source-version declarations for libraries that are actually supplied by Ubuntu packages, avoiding a false reproducibility claim.
+- Build Nginx with OpenSSL 3.5.9 plus the five official 3.5-branch fixes from the 2026-11-10 advisory while the announced 3.5.10 release artifact is unavailable.
+- Enforce PHP's upstream `session.upload_progress.enabled=0` mitigation for CVE-2026-115560 on fresh installs and upgrades, include that setting in upgrade drift detection, and stop publishing the installer-generated `phpinfo.php`.
+- Stop installing phpMyAdmin 5.2.3 because it has publicly disclosed vulnerabilities and no fixed release; upgrade inventory now schedules protected backup and removal of legacy web-served copies.
+
+### Component Updates
+
+- Nginx 1.30.4 → 1.30.6
+- OpenSSL 3.5.7 → 3.5.9 plus official 2026-11-10 security patch set
+- MySQL 8.4.11 → 8.4.13 LTS
+- PHP 8.4.25 → 8.4.27
+- Redis 8.10.1 → 8.10.3
+- Memcached 1.6.33 → 1.6.45
+- jemalloc 5.3.1 → 5.4.0
+- Swoole 6.2.2 → 6.2.5
+- Pin Composer 2.11.2, WP-CLI 2.12.0, and acme.sh 3.1.6.
+
+### Upgrade Management
+
+- Add `lnmp upgrade plan` for a read-only runtime-versus-target inventory, including the embedded OpenSSL security patch-set marker.
+- Add `lnmp upgrade apply <component...|outdated>` for selected compilation/deployment of Nginx, PHP, database binaries, optional services, PECL extensions, and operator tools; retain `phpmyadmin` only as a legacy-removal target.
+- Rebuild every installed PECL extension after a PHP upgrade; validate changed services and restore saved binaries/prefixes on deployment failure.
+- Create a compressed logical database backup before a database binary upgrade; retain core rollback copies under `/var/backups/lnmp/` and the previous database prefix beside the live prefix. Database metadata migrations can be one-way, so the logical dump remains the authoritative recovery path.
+- Refuse implicit optional-component installation and version downgrades, serialize apply runs with a process lock, and return exit `64` for an empty selection.
+
 ## v1.6.2 — 2026-09-25
 
 ### Bug Fixes

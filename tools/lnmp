@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tools/lnmp — Service management command
-# Usage: lnmp [--yes|-y] {start|stop|restart|reload|status|vhost|ssl|db|firewall|addons|reset-password|kill}
+# Usage: lnmp [--yes|-y] {start|stop|restart|reload|status|upgrade|vhost|ssl|db|firewall|addons|reset-password|kill}
 
 # Resolve tools directory: same dir as this script, or installed location
 TOOLS_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -143,10 +143,12 @@ Commands:
   restart               Restart Nginx, database, and PHP-FPM
   reload                Test and reload Nginx, then reload PHP-FPM
   status                Show service status, versions, and common ports
+  upgrade plan          Inventory installed versions against pinned targets
+  upgrade apply ...     Compile/deploy selected or all outdated components
   kill                  Force-kill LNMP processes
   vhost add|del|list    Manage Nginx virtual hosts
-  ssl install|renew|revoke|list|self
-                        Manage Let's Encrypt and self-signed certificates
+  ssl install|renew|revoke|list|self|client-upgrade
+                        Manage certificates and the pinned acme.sh client
   db add|del|list|import|export
                         Manage databases; db add uses --password-file in automation
   firewall ...          Manage ufw/iptables rules
@@ -217,6 +219,7 @@ case "${1:-}" in
     ssl)     shift; bash "${TOOLS_DIR}/ssl.sh" "$@" ;;
     db)      shift; bash "${TOOLS_DIR}/db.sh" "$@" ;;
     firewall) shift; bash "${TOOLS_DIR}/firewall.sh" "$@" ;;
+    upgrade) shift; bash "${TOOLS_DIR}/upgrade.sh" "$@" ;;
     addons)  shift; bash "${TOOLS_DIR}/addons.sh" "$@" ;;
     reset-password) shift; lnmp_expect_no_args "lnmp reset-password" "$@"; bash "${TOOLS_DIR}/reset_mysql_password.sh" "$@" ;;
     --help|-h|help) show_usage; exit 0 ;;

@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # lnmp command bash completion
 _lnmp_completion() {
     local cur prev
@@ -7,21 +8,32 @@ _lnmp_completion() {
 
     case "${prev}" in
         lnmp)
-            COMPREPLY=( $(compgen -W "start stop restart reload status kill vhost ssl db reset-password" -- ${cur}) )
+            COMPREPLY=( $(compgen -W "start stop restart reload status upgrade kill vhost ssl db firewall addons reset-password" -- "${cur}") )
             ;;
         vhost)
-            COMPREPLY=( $(compgen -W "add del list" -- ${cur}) )
+            COMPREPLY=( $(compgen -W "add del list" -- "${cur}") )
             ;;
         ssl)
-            COMPREPLY=( $(compgen -W "install renew revoke list self" -- ${cur}) )
+            COMPREPLY=( $(compgen -W "install renew revoke list self client-upgrade" -- "${cur}") )
             ;;
         db)
-            COMPREPLY=( $(compgen -W "add del list import export" -- ${cur}) )
+            COMPREPLY=( $(compgen -W "add del list import export" -- "${cur}") )
+            ;;
+        upgrade)
+            COMPREPLY=( $(compgen -W "plan apply" -- "${cur}") )
+            ;;
+        apply)
+            if [[ "${COMP_WORDS[1]}" = "upgrade" ]]; then
+                COMPREPLY=( $(compgen -W "outdated all nginx php db redis memcached composer wp-cli acme ext:redis ext:imagick ext:apcu ext:swoole ext:memcached ext:sodium ext:imap phpmyadmin" -- "${cur}") )
+            fi
+            ;;
+        addons)
+            COMPREPLY=( $(compgen -W "install uninstall list" -- "${cur}") )
             ;;
         add)
             # vhost add options
             if [[ "${COMP_WORDS[1]}" = "vhost" ]]; then
-                COMPREPLY=( $(compgen -W "--domains --webroot --rewrite --ssl --redirect" -- ${cur}) )
+                COMPREPLY=( $(compgen -W "--domains --webroot --rewrite --ssl --redirect" -- "${cur}") )
             fi
             ;;
         --rewrite)
@@ -29,7 +41,7 @@ _lnmp_completion() {
             if [[ -d /usr/local/nginx/conf/rewrite ]]; then
                 rules=$(ls /usr/local/nginx/conf/rewrite/ 2>/dev/null | sed 's/\.conf$//')
             fi
-            COMPREPLY=( $(compgen -W "${rules}" -- ${cur}) )
+            COMPREPLY=( $(compgen -W "${rules}" -- "${cur}") )
             ;;
     esac
     return 0

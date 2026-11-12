@@ -93,15 +93,18 @@ _install_mysql() {
     # Ensure required shared libraries
     _fix_mysql_libs
 
-    download_src "MySQL" "$MYSQL_URL"
+    download_src "MySQL" "$MYSQL_URL" "$MYSQL_SHA256"
 
-    cd /usr/local/
-    local tarball="$(basename "$MYSQL_URL")"
+    cd /usr/local/ || die "Cannot enter /usr/local"
+    local tarball
+    tarball="$(basename "$MYSQL_URL")"
     tar Jxf "${cur_dir}/src/${tarball}"
 
     # MySQL binary tarball extracts to mysql-VERSION-linux-glibcX.XX-ARCH
-    local extracted_dir
-    extracted_dir="$(ls -d mysql-${MYSQL_VER}-linux-glibc* 2>/dev/null | head -1)"
+    local extracted_dir="" candidate
+    for candidate in mysql-"${MYSQL_VER}"-linux-glibc*; do
+        [[ -d "$candidate" ]] && { extracted_dir="$candidate"; break; }
+    done
     [[ -n "$extracted_dir" ]] || die "Cannot find extracted MySQL directory"
     mv "$extracted_dir" mysql
 
@@ -149,6 +152,7 @@ _install_mysql() {
     echo "/usr/local/mysql/lib" > /etc/ld.so.conf.d/mysql.conf
     ldconfig
 
+    record_installed_version MYSQL "$MYSQL_VER"
     log_ok "MySQL ${MYSQL_VER} installed."
 }
 
@@ -159,15 +163,18 @@ _install_mariadb() {
 
     id -u mysql &>/dev/null || useradd -s /sbin/nologin -M mysql
 
-    download_src "MariaDB" "$MARIADB_URL"
+    download_src "MariaDB" "$MARIADB_URL" "$MARIADB_SHA256"
 
-    cd /usr/local/
-    local tarball="$(basename "$MARIADB_URL")"
+    cd /usr/local/ || die "Cannot enter /usr/local"
+    local tarball
+    tarball="$(basename "$MARIADB_URL")"
     tar zxf "${cur_dir}/src/${tarball}"
 
     # MariaDB binary tarball extracts to mariadb-VERSION-linux-systemd-ARCH
-    local extracted_dir
-    extracted_dir="$(ls -d mariadb-${MARIADB_VER}-linux-* 2>/dev/null | head -1)"
+    local extracted_dir="" candidate
+    for candidate in mariadb-"${MARIADB_VER}"-linux-*; do
+        [[ -d "$candidate" ]] && { extracted_dir="$candidate"; break; }
+    done
     [[ -n "$extracted_dir" ]] || die "Cannot find extracted MariaDB directory"
     mv "$extracted_dir" mariadb
     ln -sf /usr/local/mariadb /usr/local/mysql
@@ -205,6 +212,7 @@ _install_mariadb() {
     echo "/usr/local/mariadb/lib" > /etc/ld.so.conf.d/mariadb.conf
     ldconfig
 
+    record_installed_version MARIADB "$MARIADB_VER"
     log_ok "MariaDB ${MARIADB_VER} installed."
 }
 
