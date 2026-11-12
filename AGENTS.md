@@ -223,7 +223,7 @@ root and accepts these component names:
 
 ```text
 nginx php db redis memcached composer wp-cli acme
-ext:redis ext:imagick ext:apcu ext:swoole ext:memcached ext:sodium ext:imap
+ext:redis ext:imagick ext:apcu ext:swoole ext:memcached ext:imap
 phpmyadmin (legacy vulnerable deployment removal only)
 ```
 

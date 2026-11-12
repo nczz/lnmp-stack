@@ -13,7 +13,7 @@ install_deps() {
     local pkgs=(
         build-essential gcc g++ make cmake autoconf automake patch
         pkg-config libtool bison re2c
-        wget curl ca-certificates gnupg lsb-release
+        wget curl ca-certificates gnupg lsb-release iproute2 iputils-ping
         libxml2-dev libsqlite3-dev libcurl4-openssl-dev libpcre2-dev libicu-dev
         libpng-dev libjpeg-dev libwebp-dev libavif-dev
         libfreetype-dev libonig-dev libreadline-dev
@@ -158,6 +158,11 @@ setup_hosts() {
 }
 
 setup_sudoers() {
+    if [[ ! -f /etc/sudoers ]]; then
+        log_info "sudo is not installed; skipping sudoers configuration."
+        return 0
+    fi
+
     # Allow sudo group to run without password
     if ! grep -q '^%sudo.*NOPASSWD' /etc/sudoers 2>/dev/null; then
         sed -i 's/^%sudo.*ALL=(ALL:ALL) ALL/%sudo   ALL=(ALL:ALL) NOPASSWD: ALL/' /etc/sudoers

@@ -24,7 +24,7 @@ _lnmp_completion() {
             ;;
         apply)
             if [[ "${COMP_WORDS[1]}" = "upgrade" ]]; then
-                COMPREPLY=( $(compgen -W "outdated all nginx php db redis memcached composer wp-cli acme ext:redis ext:imagick ext:apcu ext:swoole ext:memcached ext:sodium ext:imap phpmyadmin" -- "${cur}") )
+                COMPREPLY=( $(compgen -W "outdated all nginx php db redis memcached composer wp-cli acme ext:redis ext:imagick ext:apcu ext:swoole ext:memcached ext:imap phpmyadmin" -- "${cur}") )
             fi
             ;;
         addons)

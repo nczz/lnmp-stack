@@ -31,6 +31,11 @@ All software compiled from source or installed via official binaries — no thir
 | Ubuntu | 24.04 LTS (Noble) | ✅ Supported |
 | Ubuntu | 22.04 LTS (Jammy) | ✅ Supported |
 
+The recommended path is validated on Ubuntu 26.04.1 amd64 with the default
+MariaDB engine, Nginx/OpenSSL and PHP source builds, the default PECL
+extensions, Composer/WP-CLI, service runtime checks, and `lnmp upgrade plan`.
+Oracle MySQL remains intentionally blocked on 26.04 as documented below.
+
 Full `lnmp` and `db` installs currently require `x86_64` / amd64 because the
 database engines are installed from official x86_64 binary tarballs. The
 `nginx` target can run on `aarch64`, but database installation will stop with a
@@ -229,7 +234,7 @@ Selectable components:
 
 ```text
 nginx php db redis memcached composer wp-cli acme
-ext:redis ext:imagick ext:apcu ext:swoole ext:memcached ext:sodium ext:imap
+ext:redis ext:imagick ext:apcu ext:swoole ext:memcached ext:imap
 phpmyadmin (legacy vulnerable deployment removal only)
 ```
 
@@ -345,7 +350,7 @@ sudo lnmp addons install imagick
 sudo lnmp addons uninstall swoole
 sudo lnmp addons list
 
-# Available: redis, imagick, apcu, swoole, memcached, sodium, imap
+# Available: redis, imagick, apcu, swoole, memcached, imap
 
 # Standalone services
 sudo lnmp addons install redis-server

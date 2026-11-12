@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.1 — 2026-11-12
+
+### Ubuntu 26.04 Validation
+
+- Validate the complete default component path on Ubuntu 26.04.1 amd64: Nginx with the patched OpenSSL baseline, MariaDB, PHP, default PECL extensions, Composer, WP-CLI, service listeners, database queries, and upgrade inventory.
+- Allow minimal Ubuntu installations without `sudo`, and explicitly install the `iproute2` and `iputils-ping` runtime tools used by verification and DNS checks.
+- Set `/etc/my.cnf` to mode `0644` explicitly so a permissive caller umask cannot make MariaDB reject the configuration as unsafe.
+- Recognize both current `mariadb from VERSION-MariaDB` and legacy `Distrib VERSION` client output in `lnmp upgrade plan`.
+- Remove the obsolete PECL libsodium path from addon and upgrade handling. PHP 8.4 provides sodium as a built-in extension; treating it as PECL caused a false `AHEAD` result and could attempt an invalid rebuild after PHP upgrades.
+
 ## v1.7.0 — 2026-11-12
 
 ### Security and Supply Chain

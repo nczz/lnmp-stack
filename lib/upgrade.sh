@@ -3,7 +3,7 @@
 
 UPGRADE_COMPONENTS=(
     nginx php db redis memcached
-    ext:redis ext:imagick ext:apcu ext:swoole ext:memcached ext:sodium ext:imap
+    ext:redis ext:imagick ext:apcu ext:swoole ext:memcached ext:imap
     composer wp-cli phpmyadmin acme
 )
 
@@ -26,7 +26,9 @@ _upgrade_runtime_version() {
         db)
             if [[ -x /usr/local/mariadb/bin/mariadb ]]; then
                 output=$(/usr/local/mariadb/bin/mariadb --version 2>/dev/null || true)
-                printf '%s\n' "$output" | sed -n 's/.*Distrib \([0-9][0-9.]*\).*/\1/p'
+                printf '%s\n' "$output" | sed -n \
+                    -e 's/.* Distrib \([0-9][0-9.]*\).*/\1/p' \
+                    -e 's/.* from \([0-9][0-9.]*\)-MariaDB.*/\1/p'
             elif [[ -x /usr/local/mysql/bin/mysql ]]; then
                 output=$(/usr/local/mysql/bin/mysql --version 2>/dev/null || true)
                 printf '%s\n' "$output" | sed -n 's/.*[[:space:]]Ver[[:space:]]\([0-9][0-9.]*\).*/\1/p'
@@ -96,7 +98,6 @@ _upgrade_target_version() {
         ext:apcu) printf '%s' "$APCU_VER" ;;
         ext:swoole) printf '%s' "$SWOOLE_VER" ;;
         ext:memcached) printf '%s' "$MEMCACHED_EXT_VER" ;;
-        ext:sodium) printf '%s' "$SODIUM_EXT_VER" ;;
         ext:imap) printf '%s' "$IMAP_EXT_VER" ;;
         composer) printf '%s' "$COMPOSER_VER" ;;
         wp-cli) printf '%s' "$WP_CLI_VER" ;;
@@ -266,7 +267,7 @@ _upgrade_php() {
         || die "Cannot back up the current PHP prefix."
     _upgrade_save_version_state "$backup_root"
 
-    for ext in redis imagick apcu swoole memcached sodium imap; do
+    for ext in redis imagick apcu swoole memcached imap; do
         [[ -n "$(_upgrade_runtime_version "ext:${ext}")" ]] && installed_extensions+=("$ext")
     done
 

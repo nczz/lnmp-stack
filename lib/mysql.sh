@@ -230,6 +230,8 @@ _deploy_mysql_conf() {
         -e "s|{{MAX_CONNECTIONS}}|${MYSQL_MAX_CONNECTIONS}|g" \
         -e "s|{{TIMEZONE}}|${tz_offset}|g" \
         "${cur_dir}/conf/mysql/my.cnf" > /etc/my.cnf
+    chmod 0644 /etc/my.cnf
+
 
     log_info "MySQL config deployed (buffer_pool=${MYSQL_INNODB_BUFFER_POOL}M, max_conn=${MYSQL_MAX_CONNECTIONS}, tz=${tz_offset})"
 }

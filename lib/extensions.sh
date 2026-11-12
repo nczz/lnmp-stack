@@ -50,12 +50,6 @@ EXT_VER_VAR[memcached]='MEMCACHED_EXT_VER'
 EXT_CONFIGURE[memcached]='--with-libmemcached-dir=/usr --disable-memcached-sasl'
 EXT_DEPS[memcached]='libmemcached-dev'
 
-EXT_URL_VAR[sodium]='SODIUM_EXT_URL'
-EXT_SHA_VAR[sodium]='SODIUM_EXT_SHA256'
-EXT_VER_VAR[sodium]='SODIUM_EXT_VER'
-EXT_CONFIGURE[sodium]=''
-EXT_DEPS[sodium]='libsodium-dev'
-
 # IMAP was unbundled from PHP core in PHP 8.4.
 EXT_URL_VAR[imap]='IMAP_EXT_URL'
 EXT_SHA_VAR[imap]='IMAP_EXT_SHA256'
