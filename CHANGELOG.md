@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.2 — 2026-11-13
+
+### Bug Fixes
+
+- Keep the PECL extension registry global when upgrade tooling loads build libraries from a function, preventing `set -u` from aborting PHP upgrades before installed extensions are rebuilt.
+
 ## v1.7.1 — 2026-11-12
 
 ### Ubuntu 26.04 Validation

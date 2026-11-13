@@ -18,7 +18,7 @@ _init_php_ext_dir() {
 }
 
 # Extension registry: name -> URL, digest, version, configure options, packages.
-declare -A EXT_URL_VAR EXT_SHA_VAR EXT_VER_VAR EXT_CONFIGURE EXT_DEPS || true
+declare -gA EXT_URL_VAR EXT_SHA_VAR EXT_VER_VAR EXT_CONFIGURE EXT_DEPS || true
 
 EXT_URL_VAR[redis]='REDIS_EXT_URL'
 EXT_SHA_VAR[redis]='REDIS_EXT_SHA256'
