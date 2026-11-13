@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.4 — 2026-11-13
+
+### Bug Fixes
+
+- Wait for Redis to accept commands after a service restart before deciding whether an upgrade succeeded, eliminating a startup race that caused healthy deployments to be rolled back.
+
 ## v1.7.3 — 2026-11-13
 
 ### Bug Fixes

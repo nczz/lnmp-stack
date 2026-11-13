@@ -292,6 +292,16 @@ _upgrade_php() {
     return 1
 }
 
+_upgrade_redis_wait() {
+    local i
+    for ((i = 0; i < 120; i++)); do
+        /usr/local/redis/bin/redis-cli ping 2>/dev/null | grep -qx PONG && return 0
+        systemctl is-failed --quiet redis && return 1
+        sleep 1
+    done
+    return 1
+}
+
 _upgrade_redis() {
     local backup_root backup_bin
     backup_root=$(_upgrade_backup_root)
@@ -300,7 +310,7 @@ _upgrade_redis() {
         || die "Cannot back up the current Redis binaries."
     _upgrade_save_version_state "$backup_root"
     if ( install_redis_server upgrade ) && systemctl restart redis \
-        && /usr/local/redis/bin/redis-cli ping 2>/dev/null | grep -qx PONG; then
+        && _upgrade_redis_wait; then
         log_ok "Redis upgrade deployed. Previous binaries: ${backup_bin}"
         return 0
     fi
