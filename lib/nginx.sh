@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # lib/nginx.sh — Nginx compile and install
+# shellcheck disable=SC2154  # Configuration and cur_dir are provided by sourced files.
 
 install_nginx() {
     local mode="${1:-install}"

@@ -18,9 +18,11 @@ Usage:
 
 Commands:
   plan                    Read-only inventory of installed and pinned versions.
-  apply outdated          Upgrade every installed component marked OUTDATED.
-  apply all               Alias for 'apply outdated'; missing options stay absent.
-  apply <component...>    Upgrade only the selected installed components.
+  apply outdated          Upgrade installed patch-level items marked OUTDATED.
+  apply all               Alias for 'apply outdated'; missing options and
+                          release-series transitions stay unchanged.
+  apply <component...>    Upgrade selected installed components; explicit
+                          selection is required for items marked REVIEW.
 
 Components:
   nginx php db redis memcached composer wp-cli acme
@@ -31,8 +33,12 @@ Safety:
   - apply requires root; plan does not.
   - Missing optional components are never installed by 'outdated' or 'all'.
   - Newer-than-target versions are never downgraded.
+  - Nginx/PHP/database release-series and Redis major transitions are marked
+    REVIEW and require explicit component selection.
   - Concurrent apply runs are rejected with a process lock.
+  - Per-run logs are protected under /var/log/lnmp/.
   - Core service upgrades retain rollback copies under /var/backups/lnmp/.
+  - Rollback service health is verified and reported as completed or failed.
   - Database upgrades require /root/.my.cnf and create a logical dump first.
   - Legacy phpMyAdmin is backed up root-only, then removed from the webroot.
 

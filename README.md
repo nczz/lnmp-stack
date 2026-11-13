@@ -225,9 +225,13 @@ lnmp upgrade plan
 # Compile/deploy selected installed components.
 sudo lnmp --yes upgrade apply nginx php
 
-# Apply every installed component marked OUTDATED. Missing optional
-# components remain absent; newer local versions are never downgraded.
+# Apply installed patch-level updates marked OUTDATED. Missing optional
+# components and release-series transitions remain unchanged.
 sudo lnmp --yes upgrade apply outdated
+
+# REVIEW means a release-series transition. Inspect application compatibility,
+# then approve that component explicitly.
+sudo lnmp --yes upgrade apply php
 ```
 
 Selectable components:
@@ -240,14 +244,28 @@ phpmyadmin (legacy vulnerable deployment removal only)
 
 `plan` compares runtime versions with `versions.conf`, checks the recorded
 OpenSSL patch-set marker for Nginx, and verifies the PHP upload-progress and
-public-`phpinfo.php` mitigations. `apply` recompiles source components,
-rebuilds installed PECL extensions after a PHP upgrade, validates the changed
-service, and restores the
-previous binary/prefix when validation fails. Core rollback copies are stored
-under `/var/backups/lnmp/`, and a process lock prevents concurrent upgrade
-runs. Legacy phpMyAdmin directories are marked `OUTDATED`; applying that item
-creates a protected backup under `/var/backups/lnmp/` and removes the
-web-served copy because no fixed upstream release is available.
+public-`phpinfo.php` mitigations. Nginx, PHP, and database release-series
+changes plus Redis major-version changes are marked `REVIEW`; `outdated` never
+implicitly applies them. Explicitly selecting that component records the
+operator's approval and proceeds.
+
+`apply` recompiles source components, rebuilds installed PECL extensions after
+a PHP upgrade, validates the changed service, and restores the previous
+binary/prefix when validation fails. Each run writes a root-only log under
+`/var/log/lnmp/`. Core rollback copies are stored under
+`/var/backups/lnmp/`, rollback service health is checked and reported, and a
+process lock prevents concurrent upgrade runs. Legacy phpMyAdmin directories
+are marked `OUTDATED`; applying that item creates a protected backup under
+`/var/backups/lnmp/` and removes the web-served copy because no fixed upstream
+release is available.
+
+Existing Nginx/PHP/Redis configuration, virtual hosts, certificates, webroots,
+and database data directories remain in place. Before an Nginx build, the
+upgrader inspects the current `nginx -V` module arguments and refuses to remove
+an untracked custom module; add that exact option to `Nginx_Modules_Options` in
+`lnmp.conf.local` first. Redis readiness checks honor the configured TCP port
+or Unix socket and treat an authentication challenge as proof that the server
+finished loading without exposing credentials.
 
 Database upgrades require `/root/.my.cnf`. Before changing binaries, the
 command writes a compressed `--all-databases` logical dump under
@@ -366,7 +384,8 @@ and `opcache.jit` only after validating the workload with JIT.
 
 ```bash
 lnmp upgrade plan                    # Installed/pinned version difference
-sudo lnmp upgrade apply outdated     # Upgrade installed outdated components
+sudo lnmp upgrade apply outdated     # Conservative patch-level upgrades
+sudo lnmp upgrade apply php          # Explicitly approve a REVIEW transition
 sudo ./tools/backup.sh [dir]         # Backup DB + sites + configs (7-day retention)
 sudo ./tools/uninstall.sh            # Uninstall (backup DB + preserve sites)
 sudo ./tools/uninstall.sh --reset    # Full reset for clean reinstall
@@ -389,6 +408,8 @@ sudo ./tools/uninstall.sh --reset    # Full reset for clean reinstall
 | `/home/wwwlogs/` | All logs (Nginx, PHP, FPM, mail) |
 | `/root/.my.cnf` | MySQL root password (auto-generated) |
 | `/root/lnmp-install.log` | Installation log |
+| `/var/log/lnmp/` | Root-only per-run upgrade logs |
+| `/var/backups/lnmp/` | Upgrade rollback copies and database dumps |
 
 ## License
 

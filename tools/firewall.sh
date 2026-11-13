@@ -6,6 +6,7 @@ set -euo pipefail
 LNMP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "${LNMP_DIR}/versions.conf"
 source "${LNMP_DIR}/lnmp.conf"
+# shellcheck source=/dev/null
 [[ -f "${LNMP_DIR}/lnmp.conf.local" ]] && source "${LNMP_DIR}/lnmp.conf.local"
 source "${LNMP_DIR}/lib/common.sh"
 source "${LNMP_DIR}/lib/detect.sh"

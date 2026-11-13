@@ -228,14 +228,21 @@ phpmyadmin (legacy vulnerable deployment removal only)
 ```
 
 `outdated` and `all` mean the same conservative operation: upgrade only
-installed components marked `OUTDATED`. They do not install missing optional
-components. A selected `AHEAD` component is rejected rather than downgraded.
-The legacy `phpmyadmin` target creates a root-only backup and removes the
-web-served copy; the current upstream release has no complete security fix.
-For database changes, preserve both the logical dump and previous binary
-prefix until application checks pass. Binary rollback is best-effort after
-database metadata migration; the logical dump is the authoritative recovery
-path.
+installed patch-level components marked `OUTDATED`. They do not install
+missing optional components and do not apply items marked `REVIEW`.
+Nginx/PHP/database release-series transitions and Redis major-version
+transitions are marked `REVIEW`; automation must name those components
+explicitly after application compatibility has been assessed. A selected
+`AHEAD` component is rejected rather than downgraded.
+
+Every apply run creates a root-only log under `/var/log/lnmp/`. Core rollback
+copies remain under `/var/backups/lnmp/`, and rollback service health is
+reported as completed or failed. The legacy `phpmyadmin` target creates a
+root-only backup and removes the web-served copy; the current upstream release
+has no complete security fix. For database changes, preserve both the logical
+dump and previous binary prefix until application checks pass. Binary rollback
+is best-effort after database metadata migration; the logical dump is the
+authoritative recovery path.
 
 ---
 

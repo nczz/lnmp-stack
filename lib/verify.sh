@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # lib/verify.sh — Post-install verification
+# shellcheck disable=SC2154  # DB_Type is provided by lnmp.conf.
 
 verify_all() {
     local target="${1:-lnmp}"
@@ -53,7 +54,8 @@ verify_all() {
     # Binary checks
     if [[ "$target" = 'lnmp' ]]; then
         if /usr/local/php/bin/php -v &>/dev/null; then
-            local php_ver_str=$(/usr/local/php/bin/php -r 'echo PHP_VERSION;')
+            local php_ver_str
+            php_ver_str=$(/usr/local/php/bin/php -r 'echo PHP_VERSION;')
             log_ok "PHP ${php_ver_str}: OK"
         else
             log_err "PHP binary check failed"; ((fail++))

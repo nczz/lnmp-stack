@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # lib/detect.sh — Ubuntu version detection + hardware spec detection
+# shellcheck disable=SC2034,SC2154  # Outputs/configuration are shared across sourced libraries.
 
 detect_os() {
     [[ -f /etc/os-release ]] || die "Cannot detect OS: /etc/os-release not found"
+    # shellcheck disable=SC1091  # Runtime OS metadata, unavailable on non-Linux lint hosts.
     . /etc/os-release
 
     OS_ID="$ID"
@@ -20,25 +22,17 @@ detect_os() {
 }
 
 check_os_support() {
-    local ver_num="${OS_VER/./}"
-    if [[ "$ver_num" -lt 2204 ]]; then
-        die "Ubuntu ${OS_VER} is not supported. Minimum: 22.04 LTS"
-    fi
-
-    # Warn on non-LTS releases (odd .10 releases like 24.10, 25.04, 25.10)
     case "$OS_VER" in
-        22.04|24.04|26.04) ;;  # known LTS versions
+        22.04|24.04)
+            log_ok "Ubuntu ${OS_VER} is supported."
+            ;;
+        26.04)
+            log_ok "Ubuntu ${OS_VER} (${OS_CODENAME}) — recommended target."
+            ;;
         *)
-            log_warn "Ubuntu ${OS_VER} is not a LTS release. This stack is tested on LTS only."
-            log_warn "Supported LTS versions: 26.04 (recommended), 24.04, 22.04"
+            die "Ubuntu ${OS_VER} is not supported. Supported LTS versions: 22.04, 24.04, 26.04."
             ;;
     esac
-
-    if [[ "$ver_num" -ge 2604 ]]; then
-        log_ok "Ubuntu ${OS_VER} (${OS_CODENAME}) — recommended target."
-    else
-        log_ok "Ubuntu ${OS_VER} is supported."
-    fi
 }
 
 detect_hardware() {
@@ -135,7 +129,7 @@ check_env_conflicts() {
 
     local found=()
     for entry in "${conflicts[@]}"; do
-        IFS='|' read -r name localfile aptpkg <<< "$entry"
+        IFS='|' read -r _name localfile aptpkg <<< "$entry"
         [[ -e "/usr/local/${localfile}" ]] || continue
         dpkg -s "$aptpkg" &>/dev/null || continue
         found+=("  /usr/local/${localfile}  (conflicts with apt: ${aptpkg})")
@@ -148,7 +142,8 @@ check_env_conflicts() {
         log_warn "$line"
     done
 
-    local backup_dir="/tmp/lnmp-env-backup-$(date +%Y%m%d%H%M%S)"
+    local backup_dir
+    backup_dir="/tmp/lnmp-env-backup-$(date +%Y%m%d%H%M%S)"
 
     if [[ "${Auto_Install}" = 'y' ]]; then
         log_info "Auto mode: backing up and removing conflicting files..."
@@ -160,7 +155,7 @@ check_env_conflicts() {
 
     mkdir -p "$backup_dir"
     for entry in "${conflicts[@]}"; do
-        IFS='|' read -r name localfile aptpkg <<< "$entry"
+        IFS='|' read -r _name localfile aptpkg <<< "$entry"
         [[ -e "/usr/local/${localfile}" ]] || continue
         dpkg -s "$aptpkg" &>/dev/null || continue
 
@@ -202,7 +197,7 @@ setup_swap() {
     fi
 
     log_info "Creating ${swap_size}MB swap file..."
-    dd if=/dev/zero of=/var/swap bs=1M count=${swap_size} 2>/dev/null
+    dd if=/dev/zero of=/var/swap bs=1M count="${swap_size}" 2>/dev/null
     chmod 600 /var/swap
     mkswap /var/swap
     swapon /var/swap

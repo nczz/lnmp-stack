@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.5 — 2026-11-13
+
+### Upgrade Safety and Compatibility
+
+- Treat Nginx, PHP, and database release-series transitions plus Redis major-version transitions as `REVIEW`, requiring explicit selection instead of applying them through the conservative `outdated` batch.
+- Add root-only per-run upgrade logs, prerequisite diagnostics, verified rollback health reporting, Redis readiness support for password-protected and custom-endpoint instances, custom Nginx module preservation checks, and rollback coverage for Nginx's dynamically linked jemalloc/LuaJIT libraries.
+- Add behavior tests for historical v1.3 and v1.6 version transitions, selection safety, refusal exit codes, custom-module/Redis-endpoint handling, warning-clean ShellCheck enforcement, and an Ubuntu 22.04/24.04/26.04 CI compatibility matrix.
+
 ## v1.7.4 — 2026-11-13
 
 ### Bug Fixes

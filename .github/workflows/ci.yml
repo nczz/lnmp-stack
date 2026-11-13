@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shell-quality:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Bash syntax
+        run: |
+          bash -n install.sh lib/*.sh tools/*.sh tools/lnmp tests/*.sh
+      - name: ShellCheck
+        run: |
+          shellcheck -x install.sh lib/*.sh tools/*.sh tools/lnmp tests/*.sh
+      - name: Upgrade behavior
+        run: bash tests/upgrade_test.sh
+
+  ubuntu-compatibility:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        ubuntu: ['22.04', '24.04', '26.04']
+    container: ubuntu:${{ matrix.ubuntu }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install test runtime
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash coreutils grep sed gawk util-linux
+      - name: Upgrade behavior
+        run: bash tests/upgrade_test.sh
+      - name: OS detection
+        env:
+          EXPECTED_UBUNTU: ${{ matrix.ubuntu }}
+        run: bash tests/ubuntu_compatibility_test.sh

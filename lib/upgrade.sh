@@ -123,6 +123,33 @@ _upgrade_version_status() {
     fi
 }
 
+_upgrade_version_series() {
+    local version="${1%%[-+]*}" major minor
+    IFS='.' read -r major minor _ <<< "$version"
+    [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 1
+    printf '%s.%s' "$major" "$minor"
+}
+
+_upgrade_requires_explicit_review() {
+    local component="$1" installed="$2" target="$3"
+    local installed_series target_series
+    case "$component" in
+        nginx|php|db)
+            installed_series=$(_upgrade_version_series "$installed") || return 0
+            target_series=$(_upgrade_version_series "$target") || return 0
+            [[ "$installed_series" != "$target_series" ]]
+            ;;
+        redis)
+            [[ "${installed%%.*}" =~ ^[0-9]+$ && "${target%%.*}" =~ ^[0-9]+$ ]] \
+                || return 0
+            [[ "${installed%%.*}" != "${target%%.*}" ]]
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 _upgrade_component_status() {
     local component="$1" installed target status openssl_installed
     installed=$(_upgrade_runtime_version "$component")
@@ -132,6 +159,11 @@ _upgrade_component_status() {
         [[ -z "$installed" ]] && status=CURRENT || status=OUTDATED
     else
         status=$(_upgrade_version_status "$installed" "$target")
+    fi
+
+    if [[ "$status" = OUTDATED ]] \
+        && _upgrade_requires_explicit_review "$component" "$installed" "$target"; then
+        status=REVIEW
     fi
 
     if [[ "$component" = nginx && "$status" = CURRENT && "${Enable_Nginx_Openssl:-n}" = y ]]; then
@@ -177,7 +209,7 @@ upgrade_plan() {
         target=$(_upgrade_target_version "$component")
         status=$(_upgrade_component_status "$component")
         action='-'
-        [[ "$status" = OUTDATED ]] && action="lnmp upgrade apply ${component}"
+        [[ "$status" = OUTDATED || "$status" = REVIEW ]] && action="lnmp upgrade apply ${component}"
         if [[ "$component" = nginx && "${Enable_Nginx_Openssl:-n}" = y ]]; then
             openssl_installed=$(_upgrade_nginx_openssl_version)
             [[ -n "$installed" ]] && installed="${installed} / OpenSSL ${openssl_installed:-untracked}"
@@ -193,6 +225,7 @@ upgrade_plan() {
 
 _upgrade_load_build_libraries() {
     [[ -n "${_UPGRADE_BUILD_LIBS_LOADED:-}" ]] && return 0
+    # shellcheck disable=SC2154  # cur_dir is initialized by lib/common.sh.
     source "${cur_dir}/lib/detect.sh"
     source "${cur_dir}/lib/deps.sh"
     source "${cur_dir}/lib/nginx.sh"
@@ -205,6 +238,82 @@ _upgrade_load_build_libraries() {
     check_os_support
     detect_hardware
     calc_tuning_params
+}
+
+_upgrade_init_log() {
+    local log_dir="${LNMP_UPGRADE_LOG_DIR:-/var/log/lnmp}"
+    install -d -m 0700 "$log_dir" || die "Cannot create upgrade log directory: ${log_dir}"
+    LOG_FILE="${log_dir}/upgrade-$(date +%Y%m%d%H%M%S)-$$.log"
+    install -m 0600 /dev/null "$LOG_FILE" || die "Cannot create upgrade log: ${LOG_FILE}"
+    log_info "Upgrade log: ${LOG_FILE}"
+}
+
+_upgrade_require_commands() {
+    local component command
+    local -a required=(wget sha256sum tar)
+    local -a missing=()
+
+    for component in "$@"; do
+        case "$component" in
+            nginx)
+                required+=(make gcc patch perl pkg-config)
+                ;;
+            php)
+                required+=(make gcc g++ pkg-config)
+                ;;
+            redis)
+                required+=(make gcc)
+                ;;
+            memcached)
+                required+=(make gcc pkg-config)
+                ;;
+            ext:*)
+                required+=(make gcc autoconf pkg-config)
+                ;;
+            db)
+                required+=(gzip ldd)
+                ;;
+        esac
+    done
+    for command in "${required[@]}"; do
+        command -v "$command" >/dev/null 2>&1 || missing+=("$command")
+    done
+    [[ ${#missing[@]} -eq 0 ]] || die_code "$EX_UNAVAILABLE" \
+        "Upgrade prerequisites are missing: ${missing[*]}. Install the current lnmp-stack build dependencies, then retry. Log: ${LOG_FILE}"
+}
+
+_upgrade_validate_nginx_modules() {
+    local output configure_args token
+    output="${NGINX_BUILD_OUTPUT:-}"
+    if [[ -z "$output" ]]; then
+        output=$(/usr/local/nginx/sbin/nginx -V 2>&1) \
+            || die_code "$EX_UNAVAILABLE" "Cannot inspect the current Nginx build. Log: ${LOG_FILE}"
+    fi
+    configure_args="${output#*configure arguments: }"
+    for token in $configure_args; do
+        case "$token" in
+            --add-module=*|--add-dynamic-module=*)
+                if [[ " ${Nginx_Modules_Options:-} " = *" ${token} "* ]]; then
+                    continue
+                fi
+                if [[ "${Enable_Nginx_Lua:-n}" = y ]] \
+                    && [[ "$token" = *lua-nginx-module* || "$token" = *ngx_devel_kit* ]]; then
+                    continue
+                fi
+                die_code "$EX_USAGE" \
+                    "Current Nginx uses ${token}, but the option is absent from lnmp.conf.local. Add it to Nginx_Modules_Options before upgrading; no binaries were changed. Log: ${LOG_FILE}"
+                ;;
+        esac
+    done
+}
+
+_upgrade_rollback_ok() {
+    log_warn "$1 rollback completed; restored backup: $2"
+}
+
+_upgrade_rollback_failed() {
+    log_err "$1 rollback FAILED; manual recovery is required from: $2"
+    log_err "Inspect: ${LOG_FILE}"
 }
 
 _upgrade_backup_root() {
@@ -236,6 +345,27 @@ _upgrade_restore_version_state() {
     fi
 }
 
+_upgrade_backup_nginx_runtime_libs() {
+    local backup_root="$1" path
+    local -a paths=()
+    mkdir -p "${backup_root}/nginx-runtime-libs"
+    shopt -s nullglob
+    paths=(/usr/local/lib/libjemalloc.so* /usr/local/lib/libluajit*.so*)
+    shopt -u nullglob
+    for path in "${paths[@]}"; do
+        cp -a "$path" "${backup_root}/nginx-runtime-libs/" \
+            || die "Cannot back up Nginx runtime library: ${path}"
+    done
+}
+
+_upgrade_restore_nginx_runtime_libs() {
+    local backup_root="$1"
+    [[ -d "${backup_root}/nginx-runtime-libs" ]] || return 0
+    rm -f /usr/local/lib/libjemalloc.so* /usr/local/lib/libluajit*.so*
+    cp -a "${backup_root}/nginx-runtime-libs/." /usr/local/lib/
+    ldconfig
+}
+
 _upgrade_nginx() {
     local backup_root backup_bin
     backup_root=$(_upgrade_backup_root)
@@ -243,16 +373,31 @@ _upgrade_nginx() {
     cp -a /usr/local/nginx/sbin/nginx "$backup_bin" \
         || die "Cannot back up the current Nginx binary."
     _upgrade_save_version_state "$backup_root"
+    _upgrade_backup_nginx_runtime_libs "$backup_root"
     if ! ( install_nginx upgrade ); then
         cp -a "$backup_bin" /usr/local/nginx/sbin/nginx
         _upgrade_restore_version_state "$backup_root"
+        _upgrade_restore_nginx_runtime_libs "$backup_root"
+        if /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1 \
+            && systemctl is-active --quiet nginx; then
+            _upgrade_rollback_ok Nginx "$backup_bin"
+        else
+            _upgrade_rollback_failed Nginx "$backup_bin"
+        fi
         return 1
     fi
     if ! /usr/local/nginx/sbin/nginx -t || ! systemctl restart nginx; then
         log_err "Nginx validation/restart failed; restoring previous binary."
         cp -a "$backup_bin" /usr/local/nginx/sbin/nginx
         _upgrade_restore_version_state "$backup_root"
-        systemctl restart nginx || true
+        _upgrade_restore_nginx_runtime_libs "$backup_root"
+        if /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1 \
+            && systemctl restart nginx \
+            && systemctl is-active --quiet nginx; then
+            _upgrade_rollback_ok Nginx "$backup_bin"
+        else
+            _upgrade_rollback_failed Nginx "$backup_bin"
+        fi
         return 1
     fi
     log_ok "Nginx upgrade deployed. Previous binary: ${backup_bin}"
@@ -288,14 +433,43 @@ _upgrade_php() {
     ln -sf /usr/local/php/bin/php-config /usr/bin/php-config
     ln -sf /usr/local/php/bin/pecl /usr/bin/pecl
     ln -sf /usr/local/php/sbin/php-fpm /usr/bin/php-fpm
-    systemctl start php-fpm || true
+    if /usr/local/php/sbin/php-fpm -t >/dev/null 2>&1 \
+        && systemctl start php-fpm \
+        && systemctl is-active --quiet php-fpm; then
+        _upgrade_rollback_ok PHP "$backup_php"
+    else
+        _upgrade_rollback_failed PHP "$backup_php"
+    fi
     return 1
 }
 
 _upgrade_redis_wait() {
-    local i
+    local i response line key value
+    local redis_cli="${REDIS_CLI_BIN:-/usr/local/redis/bin/redis-cli}"
+    local config="${REDIS_CONFIG_FILE:-/usr/local/redis/etc/redis.conf}"
+    local port=6379 socket=''
+    local -a cli_args=()
+
+    if [[ -r "$config" ]]; then
+        while IFS= read -r line; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            [[ -z "$line" || "$line" = \#* ]] && continue
+            read -r key value _ <<< "$line"
+            case "$key" in
+                port) port="$value" ;;
+                unixsocket) socket="$value" ;;
+            esac
+        done < "$config"
+    fi
+    if [[ -n "$socket" ]]; then
+        cli_args=(-s "$socket")
+    elif [[ "$port" =~ ^[0-9]+$ ]]; then
+        cli_args=(-p "$port")
+    fi
+
     for ((i = 0; i < 120; i++)); do
-        /usr/local/redis/bin/redis-cli ping 2>/dev/null | grep -qx PONG && return 0
+        response=$("$redis_cli" "${cli_args[@]}" ping 2>&1 || true)
+        [[ "$response" = PONG || "$response" = NOAUTH* ]] && return 0
         systemctl is-failed --quiet redis && return 1
         sleep 1
     done
@@ -318,7 +492,11 @@ _upgrade_redis() {
     rm -rf /usr/local/redis/bin
     mv "$backup_bin" /usr/local/redis/bin
     _upgrade_restore_version_state "$backup_root"
-    systemctl restart redis || true
+    if systemctl restart redis && _upgrade_redis_wait; then
+        _upgrade_rollback_ok Redis "$backup_bin"
+    else
+        _upgrade_rollback_failed Redis "$backup_bin"
+    fi
     return 1
 }
 
@@ -338,7 +516,11 @@ _upgrade_memcached() {
     rm -rf /usr/local/memcached/bin
     mv "$backup_bin" /usr/local/memcached/bin
     _upgrade_restore_version_state "$backup_root"
-    systemctl restart memcached || true
+    if systemctl restart memcached && systemctl is-active --quiet memcached; then
+        _upgrade_rollback_ok Memcached "$backup_bin"
+    else
+        _upgrade_rollback_failed Memcached "$backup_bin"
+    fi
     return 1
 }
 
@@ -421,7 +603,11 @@ _upgrade_db() {
     }
     if ! mv "$old_prefix" "$old_backup" || ! mv "$extracted" "$old_prefix"; then
         [[ -d "$old_backup" && ! -d "$old_prefix" ]] && mv "$old_backup" "$old_prefix"
-        systemctl start "$service" || true
+        if systemctl start "$service" && systemctl is-active --quiet "$service"; then
+            _upgrade_rollback_ok "$engine" "$logical_dump"
+        else
+            _upgrade_rollback_failed "$engine" "$logical_dump"
+        fi
         rm -rf "$stage"
         return 1
     fi
@@ -471,7 +657,13 @@ _upgrade_db() {
     rm -rf "$old_prefix"
     mv "$old_backup" "$old_prefix"
     [[ "$engine" = mariadb ]] && ln -sfn /usr/local/mariadb /usr/local/mysql
-    systemctl start "$service" || true
+    ldconfig || true
+    admin_bin="${old_prefix}/bin/mysqladmin"
+    if systemctl start "$service" && _upgrade_db_wait "$admin_bin"; then
+        _upgrade_rollback_ok "$engine" "$logical_dump"
+    else
+        _upgrade_rollback_failed "$engine" "$logical_dump"
+    fi
     rm -rf "$stage"
     return 1
 }
@@ -486,14 +678,32 @@ _upgrade_extension() {
     [[ -f "$so_file" ]] && cp -a "$so_file" "${backup_root}/${ext}.so"
     _upgrade_save_version_state "$backup_root"
 
-    if ( install_extension "$ext" y ) && systemctl restart php-fpm; then
+    if ( install_extension "$ext" y ) \
+        && /usr/local/php/sbin/php-fpm -t \
+        && systemctl restart php-fpm \
+        && systemctl is-active --quiet php-fpm; then
         return 0
     fi
     log_err "PHP extension ${ext} upgrade failed; restoring previous module."
-    [[ -f "${backup_root}/${ext}.ini" ]] && cp -a "${backup_root}/${ext}.ini" "$ini_file"
-    [[ -f "${backup_root}/${ext}.so" ]] && cp -a "${backup_root}/${ext}.so" "$so_file"
+    if [[ -f "${backup_root}/${ext}.ini" ]]; then
+        cp -a "${backup_root}/${ext}.ini" "$ini_file"
+    else
+        rm -f "$ini_file"
+    fi
+    if [[ -f "${backup_root}/${ext}.so" ]]; then
+        cp -a "${backup_root}/${ext}.so" "$so_file"
+    else
+        rm -f "$so_file"
+    fi
     _upgrade_restore_version_state "$backup_root"
-    systemctl restart php-fpm || true
+    if /usr/local/php/bin/php -r "exit(extension_loaded('${ext}') ? 0 : 1);" \
+        && /usr/local/php/sbin/php-fpm -t >/dev/null 2>&1 \
+        && systemctl restart php-fpm \
+        && systemctl is-active --quiet php-fpm; then
+        _upgrade_rollback_ok "PHP extension ${ext}" "$backup_root"
+    else
+        _upgrade_rollback_failed "PHP extension ${ext}" "$backup_root"
+    fi
     return 1
 }
 
@@ -511,6 +721,11 @@ _upgrade_single_file_tool() {
     log_err "${tool} upgrade failed; restoring previous executable."
     cp -a "${backup_root}/tool" "$path"
     _upgrade_restore_version_state "$backup_root"
+    if [[ -x "$path" ]]; then
+        _upgrade_rollback_ok "$tool" "${backup_root}/tool"
+    else
+        _upgrade_rollback_failed "$tool" "${backup_root}/tool"
+    fi
     return 1
 }
 
@@ -546,6 +761,11 @@ _upgrade_acme() {
     rm -rf /usr/local/acme.sh
     mv "${backup_root}/acme.sh" /usr/local/acme.sh
     _upgrade_restore_version_state "$backup_root"
+    if [[ -x /usr/local/acme.sh/acme.sh ]]; then
+        _upgrade_rollback_ok acme.sh "${backup_root}/acme.sh"
+    else
+        _upgrade_rollback_failed acme.sh "${backup_root}/acme.sh"
+    fi
     return 1
 }
 
@@ -597,7 +817,10 @@ upgrade_apply() {
         fi
     done
 
-    [[ ${#selected[@]} -gt 0 ]] || { log_ok "No installed component requires an upgrade."; return 0; }
+    [[ ${#selected[@]} -gt 0 ]] || {
+        log_ok "No installed component is eligible for automatic upgrade. REVIEW items require explicit selection."
+        return 0
+    }
     for component in "${selected[@]}"; do
         status=$(_upgrade_component_status "$component")
         case "$status" in
@@ -606,13 +829,25 @@ upgrade_apply() {
         esac
     done
 
+    if [[ ${#selected[@]} -eq 1 && "${selected[0]}" = nginx ]]; then
+        INSTALL_TARGET=nginx
+    else
+        INSTALL_TARGET=upgrade
+    fi
+
     check_root
     command -v flock >/dev/null 2>&1 \
         || die_code "$EX_UNAVAILABLE" "flock is required to serialize upgrades."
-    mkdir -p /run/lock
-    exec 9>/run/lock/lnmp-upgrade.lock
+    local lock_file="${LNMP_UPGRADE_LOCK_FILE:-/run/lock/lnmp-upgrade.lock}"
+    mkdir -p "$(dirname "$lock_file")"
+    exec 9>"$lock_file"
     flock -n 9 || die "Another LNMP upgrade is already running."
+    _upgrade_init_log
+    _upgrade_require_commands "${selected[@]}"
     _upgrade_load_build_libraries
+    for component in "${selected[@]}"; do
+        [[ "$component" = nginx ]] && _upgrade_validate_nginx_modules
+    done
     for component in "${selected[@]}"; do
         status=$(_upgrade_component_status "$component")
         case "$status" in
@@ -627,8 +862,11 @@ upgrade_apply() {
                 die_code "$EX_USAGE" "${component} became newer than the pinned target; refusing a downgrade."
                 ;;
         esac
+        [[ "$status" = REVIEW ]] \
+            && log_warn "${component} crosses a release series; explicit selection accepted. Validate application compatibility after deployment."
         log_info "Applying upgrade: ${component}"
-        _upgrade_one "$component" || die "Upgrade failed for ${component}; rollback was attempted."
+        _upgrade_one "$component" \
+            || die "Upgrade failed for ${component}; rollback was attempted. Inspect: ${LOG_FILE}"
     done
 
     log_ok "Selected upgrades completed."

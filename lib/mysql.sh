@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # lib/mysql.sh — MySQL/MariaDB binary or compile install
+# shellcheck disable=SC2154  # Configuration and cur_dir are provided by sourced files.
 
 install_mysql() {
     _check_db_arch_support
@@ -198,7 +199,7 @@ _install_mariadb() {
     systemctl start mariadb
 
     local i
-    for i in $(seq 1 60); do
+    for ((i = 0; i < 60; i++)); do
         /usr/local/mariadb/bin/mysqladmin -u root ping &>/dev/null && break
         sleep 2
     done

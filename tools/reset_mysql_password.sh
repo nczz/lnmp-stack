@@ -4,6 +4,7 @@ set -euo pipefail
 
 LNMP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 source "${LNMP_DIR}/lnmp.conf"
+# shellcheck source=/dev/null
 [[ -f "${LNMP_DIR}/lnmp.conf.local" ]] && source "${LNMP_DIR}/lnmp.conf.local"
 
 NEW_PASS="${1:-${MySQL_Root_Password:-}}"

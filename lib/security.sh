@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # lib/security.sh — Security hardening
+# shellcheck disable=SC2154  # Configuration is provided by lnmp.conf.
 
 apply_security() {
     log_info "Applying security hardening..."
