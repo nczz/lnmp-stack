@@ -171,7 +171,9 @@ install_redis_server() {
     download_src "Redis" "$REDIS_URL" "$REDIS_SHA256"
     tar_cd "redis-${REDIS_VER}.tar.gz" "redis-${REDIS_VER}"
 
-    make -j"$(nproc)" 2>&1 | tee -a "$LOG_FILE"
+    # Redis 8.10's default target builds Redis Stack modules. This project
+    # deploys the standalone server, so select the upstream core-only target.
+    make -j"$(nproc)" build redis 2>&1 | tee -a "$LOG_FILE"
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "Redis build failed"
     if [[ "$mode" = 'upgrade' ]]; then
         systemctl stop redis || die "Cannot stop Redis for deployment."

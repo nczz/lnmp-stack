@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.3 — 2026-11-13
+
+### Bug Fixes
+
+- Build Redis 8.10 through its explicit core-only target, preventing standalone Redis upgrades from requiring the optional Redis Stack module toolchains.
+
 ## v1.7.2 — 2026-11-13
 
 ### Bug Fixes
