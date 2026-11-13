@@ -244,9 +244,88 @@ dump and previous binary prefix until application checks pass. Binary rollback
 is best-effort after database metadata migration; the logical dump is the
 authoritative recovery path.
 
+## 8. Configuration-preserving upgrade and agent collaboration contract
+
+An upgrade is complete only when the component version, active configuration,
+loaded capabilities, service health, and application-facing behavior are all
+accounted for. Replacing a binary while silently resetting tuning is a failed
+upgrade.
+
+### Configuration ownership
+
+| Class | Examples | Required behavior |
+|-------|----------|-------------------|
+| Operator-owned active configuration | `php.ini`, `php-fpm.conf`, `php-fpm.d/*`, non-security `php.d/*`, Nginx/Redis configs, `/etc/my.cnf`, service overrides | Preserve content, mode, owner, and group. Never replace it with a repository template during upgrade. |
+| Project-managed security overlay | `php.d/99-lnmp-security.ini` | May be updated to the pinned security baseline; record the change in the protected configuration diff. |
+| Fresh-install template | files under `conf/` and `systemd/` | Generate defaults only for a fresh install. An upgrade may use them for comparison, but must not overwrite operator tuning. |
+| Binary-owned sample/default | `*.default` emitted by upstream `make install` | Not active configuration. Do not mistake a changed sample for a successful migration. |
+
+The PHP upgrader preserves the active PHP/FPM configuration and extension INI
+files, writes before/after module inventories, rebuilds every installed
+extension supported by `lib/extensions.sh`, and fails plus rolls back if a
+previously loaded module disappears. An unknown dynamic extension blocks the
+upgrade before binaries change; an agent must add pinned source, checksum,
+dependencies, build options, and tests to the extension registry rather than
+discarding it. The managed security overlay is the only allowed automatic PHP
+configuration change.
+
+Nginx, Redis, Memcached, and database upgrades snapshot their active
+configuration and service unit where applicable, compare it before service
+activation, and retain protected diff evidence with the rollback backup.
+
+### Mandatory agent workflow
+
+An AI agent changing versions or running an upgrade MUST:
+
+1. **Inventory reality before editing.** Run `lnmp upgrade plan`; record OS and
+   architecture, runtime versions, active service units, install/data paths,
+   Nginx `-V`, PHP `--ini`/`-m`/`php-config --configure-options`, configured
+   PHP extension directives, database engine/data directory, and Redis
+   endpoint. Never infer these from repository defaults.
+2. **Align against primary information.** Check the upstream lifecycle page,
+   release notes, migration guide, and security advisories for every changed
+   release series. Update `versions.conf` with an immutable HTTPS artifact and
+   verified SHA-256. Record the security review date; never claim permanent
+   “no CVEs.”
+3. **Classify configuration ownership.** Identify operator-owned files,
+   project-managed overlays, generated files, custom modules/extensions, and
+   secret-bearing files before mutation.
+4. **Plan compatibility explicitly.** Same-series patches may be `OUTDATED`.
+   Release-series transitions stay `REVIEW` until application and data
+   compatibility are assessed. Unknown modules or architecture gaps block the
+   run; they are not silently removed.
+5. **Use the repository path.** Fix generic upgrade code and tests first. Never
+   leave a host-only command, edited binary, ad-hoc config rewrite, or
+   hostname-specific workaround as the delivered solution.
+6. **Capture rollback evidence.** Preserve binaries/prefixes, active
+   configuration, version state, module inventory, and database logical dump
+   where applicable. Logs and diffs must remain root-only.
+7. **Verify effective behavior after deployment.** Compare protected
+   configuration and loaded modules, run native config tests, restart and
+   check readiness, exercise HTTP/database/cache paths, and run an
+   application-specific smoke for every hosted workload affected by a
+   release-series change.
+8. **Fail safely.** On an unexplained difference, missing capability, failed
+   migration, or failed smoke, stop and roll back. Report the exact backup,
+   config diff, and run log. Do not suppress the error or weaken validation.
+9. **Release only proved behavior.** Run syntax and warning-clean ShellCheck,
+   behavior tests, the supported Ubuntu matrix, and a real changed-path smoke.
+   Update README/CHANGELOG, then commit, tag, push, publish, and confirm CI.
+
+For a PHP upgrade, the expected alignment is concrete:
+
+- PHP runtime version equals `PHP_VER` in `versions.conf`.
+- Every project-supported dynamic extension that was loaded before remains
+  loaded and is rebuilt against the new PHP API.
+- `php.ini`, `php-fpm.conf`, pool files, extension tuning, and the PHP-FPM
+  systemd unit retain their pre-upgrade content and metadata.
+- `99-lnmp-security.ini` equals the repository security baseline.
+- `php-fpm -t`, service readiness, module comparison, and application smoke
+  all pass.
+
 ---
 
-## 8. Human compatibility (unchanged)
+## 9. Human compatibility (unchanged)
 
 Run any command **without** arguments from a real terminal and it prompts
 interactively exactly as before. The non-interactive guards only take effect

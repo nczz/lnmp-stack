@@ -9,6 +9,7 @@ source "${REPO_DIR}/versions.conf"
 source "${REPO_DIR}/lnmp.conf"
 source "${REPO_DIR}/lib/common.sh"
 source "${REPO_DIR}/lib/upgrade.sh"
+source "${REPO_DIR}/lib/extensions.sh"
 LOG_FILE="${TEST_TMP}/upgrade.log"
 
 fail() {
@@ -20,6 +21,83 @@ assert_eq() {
     local expected="$1" actual="$2" label="$3"
     [[ "$actual" = "$expected" ]] || fail "${label}: expected '${expected}', got '${actual}'"
 }
+
+PHP_UPGRADE_CONFIG_ROOT="${TEST_TMP}/php-config"
+mkdir -p "${PHP_UPGRADE_CONFIG_ROOT}/php.d"
+cat > "${PHP_UPGRADE_CONFIG_ROOT}/php.ini" <<'EOF'
+memory_limit=768M
+EOF
+cat > "${PHP_UPGRADE_CONFIG_ROOT}/php.d/opcache.ini" <<'EOF'
+zend_extension=opcache.so
+opcache.memory_consumption=256
+EOF
+cat > "${PHP_UPGRADE_CONFIG_ROOT}/php.d/redis.ini" <<'EOF'
+extension=redis.so
+redis.session.locking_enabled=1
+EOF
+assert_eq redis "$(_upgrade_php_dynamic_extensions)" 'managed PHP extension inventory'
+_upgrade_validate_php_extensions
+printf 'zend_extension=xdebug.so\n' > "${PHP_UPGRADE_CONFIG_ROOT}/php.d/xdebug.ini"
+set +e
+(_upgrade_validate_php_extensions) >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq 64 "$rc" 'unmanaged PHP extension refusal'
+rm -f "${PHP_UPGRADE_CONFIG_ROOT}/php.d/xdebug.ini"
+
+PHP_CONFIG_SNAPSHOT="${TEST_TMP}/php-config-snapshot"
+PHP_CONFIG_LIVE="${TEST_TMP}/php-config-live"
+cp -a "$PHP_UPGRADE_CONFIG_ROOT" "$PHP_CONFIG_SNAPSHOT"
+cp -a "$PHP_UPGRADE_CONFIG_ROOT" "$PHP_CONFIG_LIVE"
+printf 'old security baseline\n' > "${PHP_CONFIG_SNAPSHOT}/php.d/99-lnmp-security.ini"
+printf 'worker_processes auto;\n' > "${TEST_TMP}/config.before"
+cp "${TEST_TMP}/config.before" "${TEST_TMP}/config.after"
+_upgrade_assert_config_unchanged "${TEST_TMP}/config.before" "${TEST_TMP}/config.after" \
+    Test "${TEST_TMP}/config.diff"
+assert_eq '# No configuration changes.' "$(cat "${TEST_TMP}/config.diff")" \
+    'protected configuration diff evidence'
+chmod 0600 "${TEST_TMP}/config.after"
+if _upgrade_assert_config_unchanged "${TEST_TMP}/config.before" "${TEST_TMP}/config.after" \
+        Test "${TEST_TMP}/config-metadata.diff" >/dev/null 2>&1; then
+    fail 'changed configuration metadata must fail preservation'
+fi
+printf 'new security baseline\n' > "${PHP_CONFIG_LIVE}/php.d/99-lnmp-security.ini"
+_upgrade_php_configs_preserved "$PHP_CONFIG_SNAPSHOT" "$PHP_CONFIG_LIVE" \
+    || fail 'operator PHP configuration and extension tuning must be preserved'
+printf 'extension=imap.so\n' > "${PHP_CONFIG_LIVE}/php.d/imap.ini"
+_upgrade_php_configs_preserved "$PHP_CONFIG_SNAPSHOT" "$PHP_CONFIG_LIVE" \
+    || fail 'managed extension activation migration must be allowed'
+printf 'auto_prepend_file=/tmp/rogue.php\n' > "${PHP_CONFIG_LIVE}/php.d/rogue.ini"
+if _upgrade_php_configs_preserved "$PHP_CONFIG_SNAPSHOT" "$PHP_CONFIG_LIVE" >/dev/null 2>&1; then
+    fail 'unexpected active PHP configuration must fail preservation'
+fi
+rm -f "${PHP_CONFIG_LIVE}/php.d/rogue.ini"
+printf 'memory_limit=256M\n' > "${PHP_CONFIG_LIVE}/php.ini"
+if _upgrade_php_configs_preserved "$PHP_CONFIG_SNAPSHOT" "$PHP_CONFIG_LIVE" >/dev/null 2>&1; then
+    fail 'changed php.ini must fail configuration preservation'
+fi
+
+PHP_INI_SCAN_DIR="${TEST_TMP}/extension-ini"
+mkdir -p "$PHP_INI_SCAN_DIR"
+printf 'extension=redis.so\nredis.session.locking_enabled=1\n' > "${PHP_INI_SCAN_DIR}/custom.ini"
+_enable_php_extension_ini redis
+[[ ! -e "${PHP_INI_SCAN_DIR}/redis.ini" ]] \
+    || fail 'existing noncanonical extension activation must not be duplicated'
+assert_eq $'extension=redis.so\nredis.session.locking_enabled=1' \
+    "$(cat "${PHP_INI_SCAN_DIR}/custom.ini")" 'extension tuning preservation'
+_enable_php_extension_ini imagick
+assert_eq 'extension=imagick.so' "$(cat "${PHP_INI_SCAN_DIR}/imagick.ini")" \
+    'new extension activation'
+
+printf 'Core\nRedis\nZend OPcache\n' > "${TEST_TMP}/modules.before"
+printf 'Core\nRedis\nZend OPcache\njson\n' > "${TEST_TMP}/modules.after"
+_upgrade_php_modules_preserved "${TEST_TMP}/modules.before" "${TEST_TMP}/modules.after" \
+    || fail 'PHP module superset must pass'
+printf 'Core\nZend OPcache\n' > "${TEST_TMP}/modules.after"
+if _upgrade_php_modules_preserved "${TEST_TMP}/modules.before" "${TEST_TMP}/modules.after" >/dev/null 2>&1; then
+    fail 'missing PHP module must fail capability preservation'
+fi
+unset PHP_UPGRADE_CONFIG_ROOT PHP_CONFIG_SNAPSHOT PHP_CONFIG_LIVE
 
 assert_eq MISSING "$(_upgrade_version_status '' 1.0.0)" 'missing version'
 assert_eq CURRENT "$(_upgrade_version_status 1.0.0 1.0.0)" 'current version'

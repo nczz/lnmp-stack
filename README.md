@@ -248,24 +248,43 @@ public-`phpinfo.php` mitigations. Nginx, PHP, and database release-series
 changes plus Redis major-version changes are marked `REVIEW`; `outdated` never
 implicitly applies them. Explicitly selecting that component records the
 operator's approval and proceeds.
+The plan also prints the PHP configuration-preservation boundary, active
+dynamic extension directives, and any unmanaged extension that would block a
+PHP replacement.
 
-`apply` recompiles source components, rebuilds installed PECL extensions after
-a PHP upgrade, validates the changed service, and restores the previous
-binary/prefix when validation fails. Each run writes a root-only log under
-`/var/log/lnmp/`. Core rollback copies are stored under
+`apply` recompiles source components, rebuilds installed project-supported PHP
+extensions after a PHP upgrade, validates the changed service, and restores the
+previous binary/prefix when validation fails. Each run writes a root-only log
+under `/var/log/lnmp/`. Core rollback copies are stored under
 `/var/backups/lnmp/`, rollback service health is checked and reported, and a
 process lock prevents concurrent upgrade runs. Legacy phpMyAdmin directories
 are marked `OUTDATED`; applying that item creates a protected backup under
 `/var/backups/lnmp/` and removes the web-served copy because no fixed upstream
 release is available.
 
-Existing Nginx/PHP/Redis configuration, virtual hosts, certificates, webroots,
-and database data directories remain in place. Before an Nginx build, the
-upgrader inspects the current `nginx -V` module arguments and refuses to remove
-an untracked custom module; add that exact option to `Nginx_Modules_Options` in
-`lnmp.conf.local` first. Redis readiness checks honor the configured TCP port
-or Unix socket and treat an authentication challenge as proof that the server
-finished loading without exposing credentials.
+An upgrade preserves operator-owned active configuration instead of
+regenerating it from fresh-install templates. Nginx/Redis configuration,
+database defaults, applicable systemd units, PHP `php.ini`, `php-fpm.conf`,
+pool files, and extension INI tuning are copied into the protected rollback
+area and compared before the upgraded service is accepted. PHP additionally
+records before/after module inventories and a root-only `php-config.diff`.
+Every previously loaded module must remain available. The only automatically
+updated PHP configuration is the project-managed
+`php.d/99-lnmp-security.ini` security overlay.
+
+Before a PHP build, dynamic extension directives are inventoried. Extensions
+registered in `lib/extensions.sh` are rebuilt against the new PHP API without
+overwriting their existing INI tuning. An unmanaged extension such as a custom
+loader or debugger blocks the PHP upgrade before binaries change; add pinned
+source/build metadata and tests rather than silently dropping the capability.
+
+Existing virtual hosts, certificates, webroots, and database data directories
+remain in place. Before an Nginx build, the upgrader inspects the current
+`nginx -V` module arguments and refuses to remove an untracked custom module;
+add that exact option to `Nginx_Modules_Options` in `lnmp.conf.local` first.
+Redis readiness checks honor the configured TCP port or Unix socket and treat
+an authentication challenge as proof that the server finished loading without
+exposing credentials.
 
 Database upgrades require `/root/.my.cnf`. Before changing binaries, the
 command writes a compressed `--all-databases` logical dump under

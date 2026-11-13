@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.7 — 2026-11-13
+
+### Configuration-Preserving Upgrades
+
+- Preserve and compare active Nginx, PHP/PHP-FPM, Redis, Memcached, database, and systemd configuration during binary upgrades, retaining protected diff evidence with rollback backups.
+- Preserve PHP extension INI tuning, inventory loaded modules before and after replacement, rebuild registered extensions, and reject unmanaged dynamic extensions before changing binaries.
+- Define an AI-agent upgrade contract covering upstream/security alignment, configuration ownership, compatibility review, generic fixes, rollback evidence, changed-path smoke tests, and release gates.
+
 ## v1.7.6 — 2026-11-13
 
 ### CI and Compatibility

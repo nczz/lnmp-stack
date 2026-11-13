@@ -69,6 +69,46 @@ list_extensions() {
     done
 }
 
+_php_extension_directive_exists() {
+    local ext="$1" root file line key value name
+    local -a files=()
+    root="${PHP_INI_ROOT:-$(dirname "$PHP_INI_SCAN_DIR")}"
+    [[ -f "${root}/php.ini" ]] && files+=("${root}/php.ini")
+    shopt -s nullglob
+    files+=("${PHP_INI_SCAN_DIR}/"*.ini)
+    shopt -u nullglob
+    for file in "${files[@]}"; do
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            [[ -z "$line" || "$line" = \;* || "$line" = \#* || "$line" != *=* ]] && continue
+            key="${line%%=*}"
+            key="${key%"${key##*[![:space:]]}"}"
+            [[ "$key" = extension ]] || continue
+            value="${line#*=}"
+            value="${value%%;*}"
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+            value="${value#\"}"; value="${value%\"}"
+            value="${value#\'}"; value="${value%\'}"
+            name="${value##*/}"
+            name="${name%%.so*}"
+            [[ "$name" = "$ext" ]] && return 0
+        done < "$file"
+    done
+    return 1
+}
+
+_enable_php_extension_ini() {
+    local ext="$1" ini_file
+    ini_file="${PHP_INI_SCAN_DIR}/${ext}.ini"
+    if _php_extension_directive_exists "$ext"; then
+        log_info "Preserving existing PHP extension activation and tuning for: ${ext}"
+        return 0
+    fi
+    printf 'extension=%s.so\n' "$ext" > "$ini_file" \
+        || die "Cannot enable PHP extension ${ext}: ${ini_file}"
+}
+
 # Install a PHP extension by name
 # Usage: install_extension <name>
 install_extension() {
@@ -128,8 +168,7 @@ install_extension() {
     make_install
 
     # Enable
-    local ini_file="${PHP_INI_SCAN_DIR}/${ext}.ini"
-    echo "extension=${ext}.so" > "$ini_file"
+    _enable_php_extension_ini "$ext"
 
     # Verify (avoid grep -q which triggers SIGPIPE under pipefail).
     if $PHP_BIN -m 2>/dev/null | grep -i "^${ext}$" >/dev/null; then

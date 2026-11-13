@@ -221,7 +221,23 @@ upgrade_plan() {
             "$component" "${installed:--}" "$target" "$status" "$action"
     done
     printf '\nSecurity baseline: %s\n' "$SECURITY_BASELINE_DATE"
+    _upgrade_php_config_summary
 }
+
+_upgrade_php_config_summary() {
+    [[ -x /usr/local/php/bin/php ]] || return 0
+    local extensions unknown ext
+    extensions=$(_upgrade_php_dynamic_extensions | paste -sd, -)
+    while IFS= read -r ext; do
+        [[ -n "$ext" ]] || continue
+        _upgrade_php_extension_managed "$ext" || unknown+="${unknown:+,}${ext}"
+    done < <(_upgrade_php_dynamic_extensions)
+    printf 'PHP configuration: preserve php.ini, php-fpm.conf, php-fpm.d/* and php.d/*; update only project security overlays.\n'
+    printf 'PHP dynamic extensions: %s\n' "${extensions:-none}"
+    [[ -z "$unknown" ]] \
+        || printf 'PHP unmanaged extensions: %s (blocks PHP apply until build metadata is added)\n' "$unknown"
+}
+
 
 _upgrade_load_build_libraries() {
     [[ -n "${_UPGRADE_BUILD_LIBS_LOADED:-}" ]] && return 0
@@ -250,7 +266,7 @@ _upgrade_init_log() {
 
 _upgrade_require_commands() {
     local component command
-    local -a required=(wget sha256sum tar)
+    local -a required=(wget sha256sum tar diff cmp stat find comm paste readlink)
     local -a missing=()
 
     for component in "$@"; do
@@ -307,6 +323,53 @@ _upgrade_validate_nginx_modules() {
     done
 }
 
+_upgrade_php_dynamic_extensions() {
+    local root="${PHP_UPGRADE_CONFIG_ROOT:-/usr/local/php/etc}"
+    local file line key value name
+    local -a files=()
+    [[ -f "${root}/php.ini" ]] && files+=("${root}/php.ini")
+    shopt -s nullglob
+    files+=("${root}/php.d/"*.ini)
+    shopt -u nullglob
+
+    for file in "${files[@]}"; do
+        while IFS= read -r line || [[ -n "$line" ]]; do
+            line="${line#"${line%%[![:space:]]*}"}"
+            [[ -z "$line" || "$line" = \;* || "$line" = \#* ]] && continue
+            [[ "$line" = *=* ]] || continue
+            key="${line%%=*}"
+            key="${key%"${key##*[![:space:]]}"}"
+            [[ "$key" = extension || "$key" = zend_extension ]] || continue
+            value="${line#*=}"
+            value="${value%%;*}"
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%"${value##*[![:space:]]}"}"
+            value="${value#\"}"; value="${value%\"}"
+            value="${value#\'}"; value="${value%\'}"
+            name="${value##*/}"
+            name="${name%%.so*}"
+            [[ -n "$name" && "$name" != opcache ]] && printf '%s\n' "$name"
+        done < "$file"
+    done | LC_ALL=C sort -u
+}
+
+_upgrade_php_extension_managed() {
+    case "$1" in
+        redis|imagick|apcu|swoole|memcached|imap) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+_upgrade_validate_php_extensions() {
+    local ext unknown=''
+    while IFS= read -r ext; do
+        [[ -n "$ext" ]] || continue
+        _upgrade_php_extension_managed "$ext" || unknown+="${unknown:+, }${ext}"
+    done < <(_upgrade_php_dynamic_extensions)
+    [[ -z "$unknown" ]] || die_code "$EX_USAGE" \
+        "PHP uses unmanaged dynamic extension(s): ${unknown}. Add pinned source/build metadata to lib/extensions.sh before upgrading PHP; no binaries were changed. Log: ${LOG_FILE}"
+}
+
 _upgrade_rollback_ok() {
     log_warn "$1 rollback completed; restored backup: $2"
 }
@@ -323,6 +386,176 @@ _upgrade_backup_root() {
         || die "Cannot create an upgrade backup directory."
     chmod 0700 "$root" || die "Cannot protect upgrade backup directory: ${root}"
     printf '%s' "$root"
+}
+
+_upgrade_backup_config() {
+    local source="$1" destination="$2"
+    [[ -e "$source" || -L "$source" ]] || return 0
+    mkdir -p "$(dirname "$destination")" \
+        || die "Cannot create configuration backup directory for ${source}."
+    cp -a "$source" "$destination" \
+        || die "Cannot back up configuration: ${source}"
+}
+
+_upgrade_config_metadata() {
+    local root="$1" rel path kind metadata
+    if [[ -d "$root" && ! -L "$root" ]]; then
+        while IFS= read -r rel; do
+            path="${root}/${rel#./}"
+            if [[ -L "$path" ]]; then
+                printf 'link\t%s\t%s\n' "$rel" "$(readlink "$path")"
+            else
+                if [[ -d "$path" ]]; then
+                    kind='directory'
+                else
+                    kind='file'
+                fi
+                metadata=$(_upgrade_file_metadata "$path") || return 1
+                printf '%s\t%s\t%s\n' "$kind" "$rel" "$metadata"
+            fi
+        done < <(cd "$root" && find . -print | LC_ALL=C sort)
+        return 0
+    fi
+    if [[ -L "$root" ]]; then
+        printf 'link\t.\t%s\n' "$(readlink "$root")"
+    else
+        metadata=$(_upgrade_file_metadata "$root") || return 1
+        printf 'file\t.\t%s\n' "$metadata"
+    fi
+}
+
+_upgrade_assert_config_unchanged() {
+    local snapshot="$1" live="$2" label="$3" report="$4"
+    local content_rc=0 metadata_rc=0
+    local metadata_before="${report}.metadata.before"
+    local metadata_after="${report}.metadata.after"
+    [[ -e "$snapshot" || -L "$snapshot" ]] || return 0
+    install -m 0600 /dev/null "$report" \
+        || return 1
+    install -m 0600 /dev/null "$metadata_before" \
+        || return 1
+    install -m 0600 /dev/null "$metadata_after" \
+        || return 1
+    diff -ruN "$snapshot" "$live" > "$report" || content_rc=$?
+    _upgrade_config_metadata "$snapshot" > "$metadata_before" \
+        || metadata_rc=2
+    _upgrade_config_metadata "$live" > "$metadata_after" \
+        || metadata_rc=2
+    if [[ $metadata_rc -eq 0 ]] && ! cmp -s "$metadata_before" "$metadata_after"; then
+        metadata_rc=1
+    fi
+    if [[ $content_rc -eq 0 && $metadata_rc -eq 0 ]]; then
+        printf '# No configuration changes.\n' > "$report"
+        chmod 0600 "$report"
+        rm -f "$metadata_before" "$metadata_after"
+        log_ok "${label} configuration preserved: ${live}; diff: ${report}"
+        return 0
+    fi
+    if [[ $content_rc -gt 1 || $metadata_rc -gt 1 ]]; then
+        log_err "Cannot compare ${label} configuration; diff output: ${report}"
+    else
+        if [[ $metadata_rc -eq 1 ]]; then
+            {
+                printf '\n# Metadata changes\n'
+                diff -u "$metadata_before" "$metadata_after" || true
+            } >> "$report"
+        fi
+        log_err "${label} configuration changed unexpectedly; diff: ${report}"
+    fi
+    rm -f "$metadata_before" "$metadata_after"
+    return 1
+}
+
+_upgrade_write_config_diff() {
+    local snapshot="$1" live="$2" report="$3" rc=0
+    install -m 0600 /dev/null "$report" || return 1
+    if diff -ruN "$snapshot" "$live" > "$report"; then
+        printf '# No configuration changes.\n' > "$report"
+    else
+        rc=$?
+        [[ $rc -eq 1 ]] || {
+            log_err "Cannot generate configuration diff: ${report}"
+            return 1
+        }
+    fi
+    chmod 0600 "$report"
+    log_info "Configuration diff: ${report}"
+}
+
+_upgrade_file_metadata() {
+    local path="$1"
+    stat -c '%a:%u:%g' "$path" 2>/dev/null \
+        || stat -f '%Lp:%u:%g' "$path" 2>/dev/null
+}
+
+_upgrade_php_managed_ini_addition() {
+    local file="$1" base ext
+    base="${file##*/}"
+    ext="${base%.ini}"
+    _upgrade_php_extension_managed "$ext" || return 1
+    [[ "$(cat "$file")" = "extension=${ext}.so" ]]
+}
+
+_upgrade_php_configs_preserved() {
+    local snapshot="$1" live="$2" old rel current pattern changed=0
+    local -a roots=(php.d php-fpm.d)
+
+    for rel in php.ini php-fpm.conf; do
+        old="${snapshot}/${rel}"
+        current="${live}/${rel}"
+        [[ -e "$old" || -e "$current" ]] || continue
+        if [[ ! -f "$old" || ! -f "$current" ]] || ! cmp -s "$old" "$current" \
+            || [[ "$(_upgrade_file_metadata "$old")" != "$(_upgrade_file_metadata "$current")" ]]; then
+            log_err "PHP operator configuration was not preserved: ${current}"
+            changed=1
+        fi
+    done
+
+    for rel in "${roots[@]}"; do
+        if [[ "$rel" = php.d ]]; then
+            pattern='*.ini'
+        else
+            pattern='*.conf'
+        fi
+        if [[ -d "${snapshot}/${rel}" ]]; then
+            while IFS= read -r -d '' old; do
+                current="${live}/${old#"${snapshot}/"}"
+                [[ "$current" = "${live}/php.d/99-lnmp-security.ini" ]] && continue
+                if [[ ! -f "$current" ]] || ! cmp -s "$old" "$current" \
+                    || [[ "$(_upgrade_file_metadata "$old")" != "$(_upgrade_file_metadata "$current")" ]]; then
+                    log_err "PHP operator configuration was not preserved: ${current}"
+                    changed=1
+                fi
+            done < <(find "${snapshot}/${rel}" \( -type f -o -type l \) -name "$pattern" -print0)
+        fi
+        if [[ -d "${live}/${rel}" ]]; then
+            while IFS= read -r -d '' current; do
+                old="${snapshot}/${current#"${live}/"}"
+                [[ "$current" = "${live}/php.d/99-lnmp-security.ini" || -e "$old" ]] && continue
+                if [[ "$rel" = php.d ]] && _upgrade_php_managed_ini_addition "$current"; then
+                    continue
+                fi
+                log_err "Unexpected active PHP configuration was added: ${current}"
+                changed=1
+            done < <(find "${live}/${rel}" \( -type f -o -type l \) -name "$pattern" -print0)
+        fi
+    done
+    [[ $changed -eq 0 ]]
+}
+
+_upgrade_php_modules() {
+    local php_bin="${PHP_UPGRADE_BIN:-/usr/local/php/bin/php}"
+    "$php_bin" -m 2>/dev/null \
+        | sed -e '/^\[.*\]$/d' -e '/^[[:space:]]*$/d' \
+        | LC_ALL=C sort -u
+}
+
+_upgrade_php_modules_preserved() {
+    local before="$1" after="$2" missing
+    missing=$(comm -23 "$before" "$after")
+    [[ -z "$missing" ]] && return 0
+    log_err "PHP modules disappeared after upgrade: $(printf '%s' "$missing" | paste -sd, -)"
+    return 1
 }
 
 _upgrade_save_version_state() {
@@ -374,6 +607,9 @@ _upgrade_nginx() {
         || die "Cannot back up the current Nginx binary."
     _upgrade_save_version_state "$backup_root"
     _upgrade_backup_nginx_runtime_libs "$backup_root"
+    _upgrade_backup_config /usr/local/nginx/conf "${backup_root}/nginx-conf"
+    _upgrade_backup_config /etc/systemd/system/nginx.service "${backup_root}/nginx.service"
+    _upgrade_backup_config /etc/systemd/system/nginx.service.d "${backup_root}/nginx.service.d"
     if ! ( install_nginx upgrade ); then
         cp -a "$backup_bin" /usr/local/nginx/sbin/nginx
         _upgrade_restore_version_state "$backup_root"
@@ -386,7 +622,13 @@ _upgrade_nginx() {
         fi
         return 1
     fi
-    if ! /usr/local/nginx/sbin/nginx -t || ! systemctl restart nginx; then
+    if ! _upgrade_assert_config_unchanged "${backup_root}/nginx-conf" /usr/local/nginx/conf \
+            Nginx "${backup_root}/nginx-config.diff" \
+        || ! _upgrade_assert_config_unchanged "${backup_root}/nginx.service" /etc/systemd/system/nginx.service \
+            Nginx-systemd "${backup_root}/nginx-systemd.diff" \
+        || ! _upgrade_assert_config_unchanged "${backup_root}/nginx.service.d" /etc/systemd/system/nginx.service.d \
+            Nginx-systemd-overrides "${backup_root}/nginx-systemd-overrides.diff" \
+        || ! /usr/local/nginx/sbin/nginx -t || ! systemctl restart nginx; then
         log_err "Nginx validation/restart failed; restoring previous binary."
         cp -a "$backup_bin" /usr/local/nginx/sbin/nginx
         _upgrade_restore_version_state "$backup_root"
@@ -404,21 +646,44 @@ _upgrade_nginx() {
 }
 
 _upgrade_php() {
-    local backup_root backup_php ext
+    local backup_root backup_php ext before_modules after_modules
     local -a installed_extensions=()
     backup_root=$(_upgrade_backup_root)
     backup_php="${backup_root}/php"
+    before_modules="${backup_root}/php-modules.before"
+    after_modules="${backup_root}/php-modules.after"
     cp -a /usr/local/php "$backup_php" \
         || die "Cannot back up the current PHP prefix."
+    _upgrade_backup_config /etc/systemd/system/php-fpm.service "${backup_root}/php-fpm.service"
+    _upgrade_backup_config /etc/systemd/system/php-fpm.service.d "${backup_root}/php-fpm.service.d"
     _upgrade_save_version_state "$backup_root"
+    _upgrade_php_modules > "$before_modules" \
+        || die "Cannot inventory PHP modules before upgrade."
+    chmod 0600 "$before_modules"
 
     for ext in redis imagick apcu swoole memcached imap; do
         [[ -n "$(_upgrade_runtime_version "ext:${ext}")" ]] && installed_extensions+=("$ext")
     done
 
     if ( install_php upgrade && for ext in "${installed_extensions[@]}"; do install_extension "$ext" y; done ); then
-        if /usr/local/php/sbin/php-fpm -t && systemctl start php-fpm; then
-            log_ok "PHP upgrade deployed. Previous prefix: ${backup_php}"
+        _upgrade_php_modules > "$after_modules" \
+            || log_err "Cannot inventory PHP modules after upgrade."
+        chmod 0600 "$after_modules" 2>/dev/null || true
+        if _upgrade_write_config_diff "${backup_php}/etc" /usr/local/php/etc \
+                "${backup_root}/php-config.diff" \
+            && _upgrade_php_configs_preserved "${backup_php}/etc" /usr/local/php/etc \
+            && _upgrade_assert_config_unchanged "${backup_root}/php-fpm.service" \
+                /etc/systemd/system/php-fpm.service PHP-FPM-systemd \
+                "${backup_root}/php-fpm-systemd.diff" \
+            && _upgrade_assert_config_unchanged "${backup_root}/php-fpm.service.d" \
+                /etc/systemd/system/php-fpm.service.d PHP-FPM-systemd-overrides \
+                "${backup_root}/php-fpm-systemd-overrides.diff" \
+            && [[ -s "$after_modules" ]] \
+            && _upgrade_php_modules_preserved "$before_modules" "$after_modules" \
+            && /usr/local/php/sbin/php-fpm -t \
+            && systemctl start php-fpm \
+            && systemctl is-active --quiet php-fpm; then
+            log_ok "PHP upgrade deployed. Previous prefix: ${backup_php}; module inventory: ${after_modules}"
             return 0
         fi
     fi
@@ -483,7 +748,17 @@ _upgrade_redis() {
     cp -a /usr/local/redis/bin "$backup_bin" \
         || die "Cannot back up the current Redis binaries."
     _upgrade_save_version_state "$backup_root"
-    if ( install_redis_server upgrade ) && systemctl restart redis \
+    _upgrade_backup_config /usr/local/redis/etc "${backup_root}/redis-config"
+    _upgrade_backup_config /etc/systemd/system/redis.service "${backup_root}/redis.service"
+    _upgrade_backup_config /etc/systemd/system/redis.service.d "${backup_root}/redis.service.d"
+    if ( install_redis_server upgrade ) \
+        && _upgrade_assert_config_unchanged "${backup_root}/redis-config" /usr/local/redis/etc \
+            Redis "${backup_root}/redis-config.diff" \
+        && _upgrade_assert_config_unchanged "${backup_root}/redis.service" /etc/systemd/system/redis.service \
+            Redis-systemd "${backup_root}/redis-systemd.diff" \
+        && _upgrade_assert_config_unchanged "${backup_root}/redis.service.d" /etc/systemd/system/redis.service.d \
+            Redis-systemd-overrides "${backup_root}/redis-systemd-overrides.diff" \
+        && systemctl restart redis \
         && _upgrade_redis_wait; then
         log_ok "Redis upgrade deployed. Previous binaries: ${backup_bin}"
         return 0
@@ -507,7 +782,16 @@ _upgrade_memcached() {
     cp -a /usr/local/memcached/bin "$backup_bin" \
         || die "Cannot back up the current Memcached binaries."
     _upgrade_save_version_state "$backup_root"
-    if ( install_memcached_server upgrade ) && systemctl restart memcached \
+    _upgrade_backup_config /etc/systemd/system/memcached.service "${backup_root}/memcached.service"
+    _upgrade_backup_config /etc/systemd/system/memcached.service.d "${backup_root}/memcached.service.d"
+    if ( install_memcached_server upgrade ) \
+        && _upgrade_assert_config_unchanged "${backup_root}/memcached.service" \
+            /etc/systemd/system/memcached.service Memcached-systemd \
+            "${backup_root}/memcached-systemd.diff" \
+        && _upgrade_assert_config_unchanged "${backup_root}/memcached.service.d" \
+            /etc/systemd/system/memcached.service.d Memcached-systemd-overrides \
+            "${backup_root}/memcached-systemd-overrides.diff" \
+        && systemctl restart memcached \
         && systemctl is-active --quiet memcached; then
         log_ok "Memcached upgrade deployed. Previous binaries: ${backup_bin}"
         return 0
@@ -566,6 +850,12 @@ _upgrade_db() {
     dump_bin="${old_prefix}/bin/mysqldump"
     [[ -x "$dump_bin" ]] || dump_bin="${old_prefix}/bin/mariadb-dump"
     [[ -x "$dump_bin" ]] || die "Database dump client not found under ${old_prefix}."
+    _upgrade_backup_config /etc/my.cnf "${backup_root}/db-config/my.cnf"
+    _upgrade_backup_config /etc/mysql "${backup_root}/db-config/mysql"
+    _upgrade_backup_config "/etc/systemd/system/${service}.service" \
+        "${backup_root}/db-config/${service}.service"
+    _upgrade_backup_config "/etc/systemd/system/${service}.service.d" \
+        "${backup_root}/db-config/${service}.service.d"
 
     log_info "Creating pre-upgrade logical backup: ${logical_dump}"
     "$dump_bin" --defaults-extra-file=/root/.my.cnf --all-databases \
@@ -627,6 +917,16 @@ _upgrade_db() {
     ln -sf "${old_prefix}/bin/mysqldump" /usr/bin/mysqldump || failed=1
     ln -sf "${old_prefix}/bin/mysqladmin" /usr/bin/mysqladmin || failed=1
     ldconfig || failed=1
+    _upgrade_assert_config_unchanged "${backup_root}/db-config/my.cnf" /etc/my.cnf \
+        Database "${backup_root}/db-my.cnf.diff" || failed=1
+    _upgrade_assert_config_unchanged "${backup_root}/db-config/mysql" /etc/mysql \
+        Database-includes "${backup_root}/db-includes.diff" || failed=1
+    _upgrade_assert_config_unchanged "${backup_root}/db-config/${service}.service" \
+        "/etc/systemd/system/${service}.service" Database-systemd \
+        "${backup_root}/db-systemd.diff" || failed=1
+    _upgrade_assert_config_unchanged "${backup_root}/db-config/${service}.service.d" \
+        "/etc/systemd/system/${service}.service.d" Database-systemd-overrides \
+        "${backup_root}/db-systemd-overrides.diff" || failed=1
 
     admin_bin="${old_prefix}/bin/mysqladmin"
     if [[ $failed -ne 0 ]] || ! systemctl start "$service" || ! _upgrade_db_wait "$admin_bin"; then
@@ -679,9 +979,12 @@ _upgrade_extension() {
     _upgrade_save_version_state "$backup_root"
 
     if ( install_extension "$ext" y ) \
+        && _upgrade_assert_config_unchanged "${backup_root}/${ext}.ini" "$ini_file" \
+            "PHP extension ${ext}" "${backup_root}/${ext}-config.diff" \
         && /usr/local/php/sbin/php-fpm -t \
         && systemctl restart php-fpm \
         && systemctl is-active --quiet php-fpm; then
+        log_ok "PHP extension ${ext} upgrade deployed. Previous module: ${backup_root}/${ext}.so"
         return 0
     fi
     log_err "PHP extension ${ext} upgrade failed; restoring previous module."
@@ -847,6 +1150,7 @@ upgrade_apply() {
     _upgrade_load_build_libraries
     for component in "${selected[@]}"; do
         [[ "$component" = nginx ]] && _upgrade_validate_nginx_modules
+        [[ "$component" = php ]] && _upgrade_validate_php_extensions
     done
     for component in "${selected[@]}"; do
         status=$(_upgrade_component_status "$component")

@@ -41,6 +41,9 @@ Safety:
   - Rollback service health is verified and reported as completed or failed.
   - Database upgrades require /root/.my.cnf and create a logical dump first.
   - Legacy phpMyAdmin is backed up root-only, then removed from the webroot.
+  - Active service configuration is snapshotted and must remain unchanged.
+  - PHP extension INI tuning and loaded modules must survive PHP replacement.
+  - Unmanaged PHP dynamic extensions block PHP apply before binaries change.
 
 Examples:
   lnmp upgrade plan
