@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.9 — 2026-11-13
+
+### WordPress PHP Policy
+
+- Keep CLI process functions available for WP-CLI and Composer while applying a configurable, compatibility-first process-execution denylist only to the PHP-FPM `[www]` pool.
+- Disable runtime extension loading with `enable_dl=Off`, reject malformed or duplicate FPM function lists, and stop disabling filesystem, logging, IMAP, and unrelated functions by default.
+- Remove the dead optional pool-template copy and add generated-configuration tests for CLI/FPM separation, tuning, overrides, and invalid policy input.
+
 ## v1.7.8 — 2026-11-13
 
 ### Bug Fixes

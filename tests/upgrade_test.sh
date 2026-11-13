@@ -10,6 +10,7 @@ source "${REPO_DIR}/lnmp.conf"
 source "${REPO_DIR}/lib/common.sh"
 source "${REPO_DIR}/lib/upgrade.sh"
 source "${REPO_DIR}/lib/extensions.sh"
+source "${REPO_DIR}/lib/php.sh"
 LOG_FILE="${TEST_TMP}/upgrade.log"
 
 fail() {
@@ -21,6 +22,67 @@ assert_eq() {
     local expected="$1" actual="$2" label="$3"
     [[ "$actual" = "$expected" ]] || fail "${label}: expected '${expected}', got '${actual}'"
 }
+
+config_value() {
+    local file="$1" wanted="$2" line key value
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        line="${line#"${line%%[![:space:]]*}"}"
+        [[ -z "$line" || "$line" = \;* || "$line" = \#* || "$line" != *=* ]] && continue
+        key="${line%%=*}"
+        key="${key%"${key##*[![:space:]]}"}"
+        [[ "$key" = "$wanted" ]] || continue
+        value="${line#*=}"
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        printf '%s' "$value"
+        return 0
+    done < "$file"
+    return 1
+}
+
+PHP_CONFIG_DEST_DIR="${TEST_TMP}/rendered-php"
+PHP_CONFIG_PHP_BIN="${TEST_TMP}/missing-php"
+PHP_MEMORY_LIMIT=256M
+PHP_FPM_MAX_CHILDREN=29
+PHP_FPM_START_SERVERS=7
+PHP_FPM_MIN_SPARE=7
+PHP_FPM_MAX_SPARE=14
+_deploy_php_conf
+_deploy_phpfpm_conf
+config_value "${PHP_CONFIG_DEST_DIR}/php.ini" disable_functions >/dev/null \
+    || fail 'generated php.ini must explicitly keep CLI disable_functions empty'
+assert_eq '' "$(config_value "${PHP_CONFIG_DEST_DIR}/php.ini" disable_functions)" \
+    'WP-CLI function availability'
+assert_eq Off "$(config_value "${PHP_CONFIG_DEST_DIR}/php.ini" enable_dl)" \
+    'runtime extension loading disabled'
+assert_eq "$PHP_FPM_DISABLE_FUNCTIONS" \
+    "$(config_value "${PHP_CONFIG_DEST_DIR}/php-fpm.conf" 'php_admin_value[disable_functions]')" \
+    'balanced web process denylist'
+assert_eq 29 "$(config_value "${PHP_CONFIG_DEST_DIR}/php-fpm.conf" pm.max_children)" \
+    'FPM tuning render'
+
+PHP_FPM_DISABLE_FUNCTIONS='exec,stream_socket_server'
+_deploy_phpfpm_conf
+assert_eq 'exec,stream_socket_server' \
+    "$(config_value "${PHP_CONFIG_DEST_DIR}/php-fpm.conf" 'php_admin_value[disable_functions]')" \
+    'operator FPM denylist override'
+set +e
+(_validate_php_fpm_disable_functions 'exec, shell_exec') >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq 1 "$rc" 'FPM denylist whitespace rejection'
+set +e
+(_validate_php_fpm_disable_functions 'exec,EXEC') >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq 1 "$rc" 'FPM denylist duplicate rejection'
+PHP_FPM_DISABLE_FUNCTIONS=''
+_deploy_phpfpm_conf
+assert_eq '' \
+    "$(config_value "${PHP_CONFIG_DEST_DIR}/php-fpm.conf" 'php_admin_value[disable_functions]')" \
+    'empty compatibility override'
+PHP_FPM_DISABLE_FUNCTIONS='exec,passthru,shell_exec,system,popen,proc_open,pcntl_exec,pcntl_fork'
+unset PHP_CONFIG_DEST_DIR PHP_CONFIG_PHP_BIN
 
 PHP_UPGRADE_CONFIG_ROOT="${TEST_TMP}/php-config"
 mkdir -p "${PHP_UPGRADE_CONFIG_ROOT}/php.d"

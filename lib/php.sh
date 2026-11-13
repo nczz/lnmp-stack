@@ -129,13 +129,15 @@ install_php() {
 
 _deploy_php_conf() {
     local tz="${Timezone:-UTC}"
+    local config_dir="${PHP_CONFIG_DEST_DIR:-/usr/local/php/etc}"
+    mkdir -p "${config_dir}/php.d"
 
     sed -e "s|{{TIMEZONE}}|${tz}|g" \
         -e "s|{{MEMORY_LIMIT}}|${PHP_MEMORY_LIMIT}|g" \
-        "${cur_dir}/conf/php/php.ini" > /usr/local/php/etc/php.ini
+        "${cur_dir}/conf/php/php.ini" > "${config_dir}/php.ini"
 
     # OPcache config
-    cat > /usr/local/php/etc/php.d/opcache.ini <<'EOF'
+    cat > "${config_dir}/php.d/opcache.ini" <<'EOF'
 [opcache]
 zend_extension=opcache.so
 opcache.enable=1
@@ -177,16 +179,39 @@ _remove_generated_phpinfo() {
     fi
 }
 
+_validate_php_fpm_disable_functions() {
+    local value="$1" item normalized seen=','
+    local php_bin="${PHP_CONFIG_PHP_BIN:-/usr/local/php/bin/php}"
+    local -a functions=()
+    [[ -z "$value" ]] && return 0
+    [[ "$value" =~ ^[[:alpha:]_][[:alnum:]_]*(,[[:alpha:]_][[:alnum:]_]*)*$ ]] \
+        || die "PHP_FPM_DISABLE_FUNCTIONS must be comma-separated function names without spaces."
+    IFS=',' read -r -a functions <<< "$value"
+    for item in "${functions[@]}"; do
+        normalized="${item,,}"
+        [[ "$seen" != *",${normalized},"* ]] \
+            || die "PHP_FPM_DISABLE_FUNCTIONS contains a duplicate function: ${item}"
+        seen+="${normalized},"
+        if [[ -x "$php_bin" ]] \
+            && ! "$php_bin" -r "exit(function_exists('${item}') ? 0 : 1);" >/dev/null 2>&1; then
+            log_warn "PHP_FPM_DISABLE_FUNCTIONS names '${item}', which is not currently defined; verify spelling or install its extension."
+        fi
+    done
+}
+
 _deploy_phpfpm_conf() {
+    local config_dir="${PHP_CONFIG_DEST_DIR:-/usr/local/php/etc}"
+    local disabled="${PHP_FPM_DISABLE_FUNCTIONS-exec,passthru,shell_exec,system,popen,proc_open,pcntl_exec,pcntl_fork}"
+    _validate_php_fpm_disable_functions "$disabled"
+    mkdir -p "$config_dir"
     sed -e "s|{{MAX_CHILDREN}}|${PHP_FPM_MAX_CHILDREN}|g" \
         -e "s|{{START_SERVERS}}|${PHP_FPM_START_SERVERS}|g" \
         -e "s|{{MIN_SPARE}}|${PHP_FPM_MIN_SPARE}|g" \
         -e "s|{{MAX_SPARE}}|${PHP_FPM_MAX_SPARE}|g" \
-        "${cur_dir}/conf/php/php-fpm.conf" > /usr/local/php/etc/php-fpm.conf
+        -e "s|{{DISABLE_FUNCTIONS}}|${disabled}|g" \
+        "${cur_dir}/conf/php/php-fpm.conf" > "${config_dir}/php-fpm.conf"
 
-    cp "${cur_dir}/conf/php/www.conf" /usr/local/php/etc/php-fpm.d/www.conf 2>/dev/null || true
-
-    log_info "PHP-FPM config: max_children=${PHP_FPM_MAX_CHILDREN}, memory_limit=${PHP_MEMORY_LIMIT}"
+    log_info "PHP-FPM config: max_children=${PHP_FPM_MAX_CHILDREN}, memory_limit=${PHP_MEMORY_LIMIT}, disabled_web_functions=${disabled:-none}"
 }
 
 _install_composer() {

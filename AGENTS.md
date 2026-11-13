@@ -269,6 +269,18 @@ dependencies, build options, and tests to the extension registry rather than
 discarding it. The managed security overlay is the only allowed automatic PHP
 configuration change.
 
+For the repository's single managed `[www]` pool, fresh installs MUST keep CLI
+`disable_functions` empty for WP-CLI/Composer, set `enable_dl=Off`, and apply
+the configurable `PHP_FPM_DISABLE_FUNCTIONS` list only through the FPM pool's
+`php_admin_value`. The compatibility-first default blocks process creation:
+`exec,passthru,shell_exec,system,popen,proc_open,pcntl_exec,pcntl_fork`.
+Agents MUST NOT add filesystem, logging, socket, or IMAP functions to the
+global default without an explicit workload requirement and plugin smoke.
+Changing this list on an existing host is a reviewed configuration migration,
+not a package upgrade: back up the active file, preserve CLI behavior, run
+`php-fpm -t`, exercise backup/media/mail/security plugins, and roll back on any
+undefined-function failure.
+
 Nginx, Redis, Memcached, and database upgrades snapshot their active
 configuration and service unit where applicable, compare it before service
 activation, and retain protected diff evidence with the rollback backup.

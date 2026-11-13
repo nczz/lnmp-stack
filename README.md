@@ -134,6 +134,7 @@ older supported Ubuntu releases where its binary dependencies can be satisfied.
 | `Enable_PHP_Sodium` | `y` | Modern cryptography (libsodium) |
 | `Enable_PHP_Imap` | `n` | Legacy alias that queues the PECL `imap` extension |
 | `PHP_Extensions_Install` | `redis imagick apcu` | PECL extensions to compile after install |
+| `PHP_FPM_DISABLE_FUNCTIONS` | `exec,passthru,shell_exec,system,popen,proc_open,pcntl_exec,pcntl_fork` | PHP-FPM-only process controls; CLI remains unrestricted for WP-CLI and Composer |
 
 PHP 8.4 moved IMAP out of PHP core and into PECL. Prefer
 `PHP_Extensions_Install='redis imagick apcu imap'`; existing
@@ -141,6 +142,15 @@ PHP 8.4 moved IMAP out of PHP core and into PECL. Prefer
 the same PECL extension during full installs. LNMP also enforces
 `session.upload_progress.enabled=0` in `99-lnmp-security.ini` for fresh installs
 and PHP upgrades.
+
+Fresh installs keep CLI `disable_functions` empty, set `enable_dl=Off`, and
+apply `PHP_FPM_DISABLE_FUNCTIONS` only to the `[www]` pool through
+`php_admin_value`. The default blocks external process creation without
+disabling filesystem, logging, socket, or IMAP functions commonly needed by
+managed WordPress plugins. Values must be unique comma-separated PHP function
+names without spaces. Existing installations remain operator-owned and are not
+silently rewritten during an upgrade; change their active `php-fpm.conf`
+deliberately, run `php-fpm -t`, then reload PHP-FPM after application smoke.
 
 ### Tools
 
