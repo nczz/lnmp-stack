@@ -225,8 +225,8 @@ upgrade_plan() {
 }
 
 _upgrade_php_config_summary() {
-    [[ -x /usr/local/php/bin/php ]] || return 0
-    local extensions unknown ext
+    local extensions unknown='' ext
+    [[ -x "${PHP_UPGRADE_BIN:-/usr/local/php/bin/php}" ]] || return 0
     extensions=$(_upgrade_php_dynamic_extensions | paste -sd, -)
     while IFS= read -r ext; do
         [[ -n "$ext" ]] || continue

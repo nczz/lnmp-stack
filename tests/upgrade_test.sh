@@ -37,6 +37,10 @@ redis.session.locking_enabled=1
 EOF
 assert_eq redis "$(_upgrade_php_dynamic_extensions)" 'managed PHP extension inventory'
 _upgrade_validate_php_extensions
+PHP_UPGRADE_BIN=/usr/bin/true
+PHP_CONFIG_SUMMARY=$(_upgrade_php_config_summary)
+[[ "$PHP_CONFIG_SUMMARY" = *'PHP dynamic extensions: redis'* ]] \
+    || fail 'PHP configuration summary must include managed extensions under nounset'
 printf 'zend_extension=xdebug.so\n' > "${PHP_UPGRADE_CONFIG_ROOT}/php.d/xdebug.ini"
 set +e
 (_upgrade_validate_php_extensions) >/dev/null 2>&1
@@ -97,7 +101,7 @@ printf 'Core\nZend OPcache\n' > "${TEST_TMP}/modules.after"
 if _upgrade_php_modules_preserved "${TEST_TMP}/modules.before" "${TEST_TMP}/modules.after" >/dev/null 2>&1; then
     fail 'missing PHP module must fail capability preservation'
 fi
-unset PHP_UPGRADE_CONFIG_ROOT PHP_CONFIG_SNAPSHOT PHP_CONFIG_LIVE
+unset PHP_UPGRADE_CONFIG_ROOT PHP_UPGRADE_BIN PHP_CONFIG_SUMMARY PHP_CONFIG_SNAPSHOT PHP_CONFIG_LIVE
 
 assert_eq MISSING "$(_upgrade_version_status '' 1.0.0)" 'missing version'
 assert_eq CURRENT "$(_upgrade_version_status 1.0.0 1.0.0)" 'current version'

@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.8 — 2026-11-13
+
+### Bug Fixes
+
+- Initialize the PHP configuration-summary accumulator under `set -u` and cover the real `upgrade plan` summary path in behavior tests.
+
 ## v1.7.7 — 2026-11-13
 
 ### Configuration-Preserving Upgrades
