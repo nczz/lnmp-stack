@@ -120,7 +120,7 @@ install_php() {
     ln -sf /usr/local/php/sbin/php-fpm /usr/bin/php-fpm
 
     if [[ "$mode" = 'install' ]]; then
-        [[ "${Enable_Composer:-n}" = 'y' ]] && _install_composer
+        [[ "${Enable_Composer:-n}" = 'y' ]] && _install_composer n
     fi
 
     record_installed_version PHP "$PHP_VER"

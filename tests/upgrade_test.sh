@@ -84,7 +84,8 @@ NGINX_BUILD_OUTPUT='nginx version: nginx/1.30.4 configure arguments: --add-modul
 Nginx_Modules_Options=''
 Enable_Nginx_Lua=y
 _upgrade_validate_nginx_modules
-unset NGINX_BUILD_OUTPUT REDIS_CLI_BIN REDIS_CONFIG_FILE REDIS_ARGS_FILE
+unset REDIS_CLI_BIN REDIS_CONFIG_FILE REDIS_ARGS_FILE
+NGINX_BUILD_OUTPUT='nginx version: nginx/1.30.6 configure arguments: --with-http_ssl_module'
 
 # Model versions installed by historical repository releases. These paths are
 # intentionally classified without using the production host's filesystem.
@@ -127,7 +128,6 @@ check_root() { return 0; }
 _upgrade_init_log() { LOG_FILE="${TEST_TMP}/apply.log"; : > "$LOG_FILE"; }
 _upgrade_require_commands() { return 0; }
 _upgrade_load_build_libraries() { LOADED_TARGET="$INSTALL_TARGET"; }
-_upgrade_validate_nginx_modules() { return 0; }
 upgrade_plan() { return 0; }
 flock() { return 0; }
 LNMP_UPGRADE_LOCK_FILE="${TEST_TMP}/upgrade.lock"

@@ -25,11 +25,11 @@ case "$ACTION" in
                 ;;
             redis-server)
                 detect_hardware
-                install_redis_server
+                install_redis_server install
                 systemctl start redis
                 ;;
             memcached-server)
-                install_memcached_server
+                install_memcached_server install
                 systemctl start memcached
                 ;;
             *)

@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.6 — 2026-11-13
+
+### CI and Compatibility
+
+- Pass explicit install-mode defaults at optional-argument call sites and isolate upgrade-test fixtures so the warning-clean ShellCheck gate remains portable across ShellCheck releases.
+
 ## v1.7.5 — 2026-11-13
 
 ### Upgrade Safety and Compatibility

@@ -174,7 +174,7 @@ case "$INSTALL_TARGET" in
             log_ok "[2/7] Nginx — already installed, skipping."
         else
             log_info "[2/7] Compiling Nginx ${NGINX_VER}..."
-            install_nginx
+            install_nginx install
             verify_step "Nginx" verify_nginx
             mark_step nginx
         fi
@@ -192,7 +192,7 @@ case "$INSTALL_TARGET" in
             log_ok "[4/7] PHP — already installed, skipping."
         else
             log_info "[4/7] Compiling PHP ${PHP_VER} (this takes the longest)..."
-            install_php
+            install_php install
             verify_step "PHP" verify_php
             mark_step php
         fi
@@ -201,14 +201,14 @@ case "$INSTALL_TARGET" in
             log_ok "[5/7] Tools — already installed, skipping."
         else
             log_info "[5/7] Installing tools (WP-CLI, extensions)..."
-            install_wp_cli
+            install_wp_cli n
             _install_php_extensions
             mark_step tools
         fi
         ;;
     nginx)
         log_info "[2/2] Compiling Nginx ${NGINX_VER}..."
-        install_nginx
+        install_nginx install
         verify_step "Nginx" verify_nginx
         ;;
     db)

@@ -82,9 +82,9 @@ verify_all() {
     echo ""
     if [[ $fail -eq 0 ]]; then
         log_ok "All checks passed!"
-    else
-        log_err "${fail} check(s) failed. Review the log: ${LOG_FILE}"
+        return 0
     fi
 
-    return $fail
+    log_err "${fail} check(s) failed. Review the log: ${LOG_FILE}"
+    return 1
 }
