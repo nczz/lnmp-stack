@@ -363,6 +363,10 @@ Behavior in non-interactive mode:
   are touched.
 - acme.sh registration email is read from `ACME_EMAIL` env or `Acme_Email` in
   `lnmp.conf.local` (email is optional for Let's Encrypt).
+- Composer inventory and verification close stdin, use finite timeouts, set
+  `COMPOSER_ALLOW_SUPERUSER=1`, and pass
+  `--no-interaction`, so `--auto` remains unattended even inside `tmux`,
+  `screen`, or another inherited pseudo-terminal.
 
 **SSL preconditions** (or issuance returns `75`): DNS `A`/`AAAA` already points
 here, port 80 reachable, vhost exists to serve `/.well-known/acme-challenge/`.

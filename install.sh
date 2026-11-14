@@ -270,11 +270,11 @@ echo "  Logs: /home/wwwlogs/"
 echo "  Install log: ${LOG_FILE}"
 [[ "$INSTALL_TARGET" = 'lnmp' || "$INSTALL_TARGET" = 'db' ]] && [[ -f /root/.my.cnf ]] && echo "  Database root password: /root/.my.cnf"
 [[ "${Enable_Docker:-n}" = 'y' ]] && command -v docker &>/dev/null && echo "  Docker: $(timeout 10 docker --version 2>/dev/null | awk '{print $3}' | tr -d ',')"
-# Version probes are wrapped in `timeout` as a safety fuse. Composer also runs
-# with --no-interaction so any unexpected first-run prompt cannot block the
-# installer summary.
+# Shared probes close stdin, disable Composer interaction, allow intentional
+# root execution, and enforce a timeout so unattended TTY sessions cannot hang.
 if [[ "$INSTALL_TARGET" = 'lnmp' && "${Enable_Composer:-n}" = 'y' && -x /usr/local/bin/composer ]]; then
-    echo "  Composer: $(timeout 10 /usr/local/php/bin/php /usr/local/bin/composer --version --no-interaction 2>/dev/null | awk '{print $3}')"
+    composer_summary=$(composer_version || true)
+    echo "  Composer: ${composer_summary:-unavailable}"
 fi
 if [[ "$INSTALL_TARGET" = 'lnmp' && "${Enable_WP_CLI:-n}" = 'y' && -x /usr/local/bin/wp ]]; then
     echo "  WP-CLI: $(timeout 10 /usr/local/php/bin/php /usr/local/bin/wp --version --allow-root 2>/dev/null)"

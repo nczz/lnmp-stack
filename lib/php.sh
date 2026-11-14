@@ -218,7 +218,7 @@ _install_composer() {
     local force="${1:-n}"
     if [[ "$force" != 'y' && -x /usr/local/bin/composer ]]; then
         local current
-        current=$(/usr/local/php/bin/php /usr/local/bin/composer --version --no-ansi 2>/dev/null | awk '{print $3}')
+        current=$(composer_version || true)
         if [[ "$current" = "$COMPOSER_VER" ]]; then
             log_info "Composer ${COMPOSER_VER} already installed, skipping."
             return 0
@@ -229,7 +229,7 @@ _install_composer() {
     download_src "Composer" "$COMPOSER_URL" "$COMPOSER_SHA256"
     install -m 0755 "${cur_dir}/src/$(basename "$COMPOSER_URL")" /usr/local/bin/composer
     local installed
-    installed=$(/usr/local/php/bin/php /usr/local/bin/composer --version --no-ansi 2>/dev/null | awk '{print $3}')
+    installed=$(composer_version || true)
     [[ "$installed" = "$COMPOSER_VER" ]] || die "Composer verification failed: expected ${COMPOSER_VER}, got ${installed:-unknown}"
     record_installed_version COMPOSER "$COMPOSER_VER"
     log_ok "Composer ${COMPOSER_VER} installed."

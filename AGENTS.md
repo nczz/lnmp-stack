@@ -31,6 +31,13 @@ blocks on `read`) when ANY of these is true:
 In non-interactive mode, a missing or invalid **required** value is a hard
 error (exit `64`) written to **stderr** — it never silently hangs.
 
+Every third-party probe that can prompt when it inherits a TTY MUST
+independently disable interaction, close stdin with `</dev/null`, and enforce a
+Setting `Auto_Install`, `--yes`, or `NONINTERACTIVE` is not sufficient when the
+child program implements its own prompts. Composer probes MUST use
+`composer_version`, which also sets `COMPOSER_ALLOW_SUPERUSER=1`; agents MUST
+NOT invoke the Composer PHAR directly for inventory or verification.
+
 ### Global flag
 
 ```bash

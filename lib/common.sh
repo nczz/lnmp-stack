@@ -168,6 +168,37 @@ verify_sha256() {
     [[ "${actual,,}" = "$expected" ]]
 }
 
+# Query Composer without inheriting a terminal. Composer prompts when root owns
+# an interactive stdin, even for --version, so every caller must use this path.
+composer_version() {
+    local php_bin="${COMPOSER_PHP_BIN:-/usr/local/php/bin/php}"
+    local composer_bin="${COMPOSER_BIN:-/usr/local/bin/composer}"
+    local output version rc
+
+    [[ -x "$php_bin" && -x "$composer_bin" ]] || return 127
+    if output=$(COMPOSER_ALLOW_SUPERUSER=1 timeout \
+            --signal=TERM --kill-after=2s 10s \
+            "$php_bin" "$composer_bin" \
+            --version --no-ansi --no-interaction </dev/null 2>/dev/null); then
+        version=$(printf '%s\n' "$output" | awk \
+            '$1 == "Composer" && $2 == "version" { print $3; exit }')
+        if [[ -n "$version" ]]; then
+            printf '%s' "$version"
+            return 0
+        fi
+        printf '[WARN] Composer returned an unrecognized version response.\n' >&2
+        return 1
+    else
+        rc=$?
+        if [[ "$rc" -eq 124 || "$rc" -eq 137 ]]; then
+            printf '[WARN] Composer version probe timed out after 10 seconds.\n' >&2
+        else
+            printf '[WARN] Composer version probe failed with exit code %s.\n' "$rc" >&2
+        fi
+        return "$rc"
+    fi
+}
+
 LNMP_STATE_DIR="${LNMP_STATE_DIR:-/var/lib/lnmp}"
 LNMP_VERSION_STATE="${LNMP_VERSION_STATE:-${LNMP_STATE_DIR}/installed-versions}"
 

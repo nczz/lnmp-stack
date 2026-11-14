@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.10 — 2026-11-14
+
+### Unattended Composer Probes
+
+- Prevent root Composer version checks from blocking unattended installs or upgrades that inherit a TTY by centralizing probes with `--no-interaction`, closed stdin, explicit superuser intent, and a hard timeout.
+- Report probe failures and timeouts on stderr, and cover argument, stdin, environment, parsing, and timeout behavior with regression tests.
+
 ## v1.7.9 — 2026-11-13
 
 ### WordPress PHP Policy

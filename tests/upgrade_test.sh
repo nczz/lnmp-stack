@@ -40,6 +40,49 @@ config_value() {
     return 1
 }
 
+mkdir -p "${TEST_TMP}/composer-probe-bin"
+cat > "${TEST_TMP}/composer-probe-bin/timeout" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" = '--signal=TERM' && "$2" = '--kill-after=2s' && "$3" = '10s' ]] || exit 97
+shift 3
+[[ "${FAKE_TIMEOUT_RC:-0}" = 0 ]] || exit "$FAKE_TIMEOUT_RC"
+exec "$@"
+EOF
+cat > "${TEST_TMP}/composer-probe-bin/php" <<'EOF'
+#!/usr/bin/env bash
+[[ "${COMPOSER_ALLOW_SUPERUSER:-}" = 1 ]] || exit 90
+[[ ! -t 0 ]] || exit 91
+if [[ -e /proc/self/fd/0 ]]; then
+    [[ "$(readlink /proc/self/fd/0)" = /dev/null ]] || exit 92
+fi
+[[ "$#" -eq 4 && "$2" = '--version' && "$3" = '--no-ansi' && "$4" = '--no-interaction' ]] || exit 93
+printf '%s\n' "$*" > "$COMPOSER_PROBE_ARGS_FILE"
+printf 'Composer version 2.11.2 2026-11-12 15:42:17\n'
+EOF
+: > "${TEST_TMP}/composer-probe-bin/composer"
+chmod +x "${TEST_TMP}/composer-probe-bin/"{timeout,php,composer}
+export COMPOSER_PROBE_ARGS_FILE="${TEST_TMP}/composer-probe-args"
+probe_path="${TEST_TMP}/composer-probe-bin:${PATH}"
+assert_eq 2.11.2 \
+    "$(COMPOSER_PHP_BIN="${TEST_TMP}/composer-probe-bin/php" \
+        COMPOSER_BIN="${TEST_TMP}/composer-probe-bin/composer" \
+        PATH="$probe_path" composer_version)" \
+    'non-interactive Composer version probe'
+assert_eq "${TEST_TMP}/composer-probe-bin/composer --version --no-ansi --no-interaction" \
+    "$(cat "$COMPOSER_PROBE_ARGS_FILE")" 'Composer probe arguments'
+set +e
+FAKE_TIMEOUT_RC=124 \
+    COMPOSER_PHP_BIN="${TEST_TMP}/composer-probe-bin/php" \
+    COMPOSER_BIN="${TEST_TMP}/composer-probe-bin/composer" \
+    PATH="$probe_path" composer_version \
+    >/dev/null 2>"${TEST_TMP}/composer-timeout-error"
+rc=$?
+set -e
+assert_eq 124 "$rc" 'Composer timeout exit code'
+[[ "$(cat "${TEST_TMP}/composer-timeout-error")" = *'timed out after 10 seconds'* ]] \
+    || fail 'Composer timeout must provide an actionable diagnostic'
+unset COMPOSER_PROBE_ARGS_FILE
+
 PHP_CONFIG_DEST_DIR="${TEST_TMP}/rendered-php"
 PHP_CONFIG_PHP_BIN="${TEST_TMP}/missing-php"
 PHP_MEMORY_LIMIT=256M

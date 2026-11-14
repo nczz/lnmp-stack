@@ -45,7 +45,7 @@ _upgrade_runtime_version() {
             ;;
         composer)
             [[ -x /usr/local/bin/composer && -x /usr/local/php/bin/php ]] || return 0
-            /usr/local/php/bin/php /usr/local/bin/composer --version --no-ansi 2>/dev/null | awk '{print $3}'
+            composer_version || true
             ;;
         wp-cli)
             [[ -x /usr/local/bin/wp ]] || return 0
