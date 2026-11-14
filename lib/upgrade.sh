@@ -847,8 +847,11 @@ _upgrade_db() {
     old_backup=$(mktemp -d "${old_prefix}.previous.$(date +%Y%m%d%H%M%S)-XXXXXX") \
         || die "Cannot reserve a database rollback path beside ${old_prefix}."
     rmdir "$old_backup" || die "Cannot prepare database rollback path: ${old_backup}"
-    dump_bin="${old_prefix}/bin/mysqldump"
-    [[ -x "$dump_bin" ]] || dump_bin="${old_prefix}/bin/mariadb-dump"
+    if [[ "$engine" = mariadb ]]; then
+        dump_bin="${old_prefix}/bin/mariadb-dump"
+    else
+        dump_bin="${old_prefix}/bin/mysqldump"
+    fi
     [[ -x "$dump_bin" ]] || die "Database dump client not found under ${old_prefix}."
     _upgrade_backup_config /etc/my.cnf "${backup_root}/db-config/my.cnf"
     _upgrade_backup_config /etc/mysql "${backup_root}/db-config/mysql"
@@ -913,9 +916,7 @@ _upgrade_db() {
     if [[ "$engine" = mariadb ]]; then
         ln -sfn /usr/local/mariadb /usr/local/mysql || failed=1
     fi
-    ln -sf "${old_prefix}/bin/mysql" /usr/bin/mysql || failed=1
-    ln -sf "${old_prefix}/bin/mysqldump" /usr/bin/mysqldump || failed=1
-    ln -sf "${old_prefix}/bin/mysqladmin" /usr/bin/mysqladmin || failed=1
+    _install_database_client_links "$engine" "$old_prefix" || failed=1
     ldconfig || failed=1
     _upgrade_assert_config_unchanged "${backup_root}/db-config/my.cnf" /etc/my.cnf \
         Database "${backup_root}/db-my.cnf.diff" || failed=1
@@ -928,7 +929,11 @@ _upgrade_db() {
         "/etc/systemd/system/${service}.service.d" Database-systemd-overrides \
         "${backup_root}/db-systemd-overrides.diff" || failed=1
 
-    admin_bin="${old_prefix}/bin/mysqladmin"
+    if [[ "$engine" = mariadb ]]; then
+        admin_bin="${old_prefix}/bin/mariadb-admin"
+    else
+        admin_bin="${old_prefix}/bin/mysqladmin"
+    fi
     if [[ $failed -ne 0 ]] || ! systemctl start "$service" || ! _upgrade_db_wait "$admin_bin"; then
         failed=1
     else
@@ -956,9 +961,14 @@ _upgrade_db() {
     fi
     rm -rf "$old_prefix"
     mv "$old_backup" "$old_prefix"
-    [[ "$engine" = mariadb ]] && ln -sfn /usr/local/mariadb /usr/local/mysql
+    if [[ "$engine" = mariadb ]]; then
+        ln -sfn /usr/local/mariadb /usr/local/mysql
+        admin_bin="${old_prefix}/bin/mariadb-admin"
+    else
+        admin_bin="${old_prefix}/bin/mysqladmin"
+    fi
+    _install_database_client_links "$engine" "$old_prefix" || true
     ldconfig || true
-    admin_bin="${old_prefix}/bin/mysqladmin"
     if systemctl start "$service" && _upgrade_db_wait "$admin_bin"; then
         _upgrade_rollback_ok "$engine" "$logical_dump"
     else

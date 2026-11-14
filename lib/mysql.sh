@@ -13,6 +13,64 @@ install_mysql() {
     fi
 }
 
+# Install both vendor-current and compatibility client names into a PATH
+# directory. MariaDB-aware consumers such as WP-CLI invoke mariadb* binaries,
+# while existing automation may still use the legacy mysql* names.
+_install_database_client_links() {
+    local engine="$1" prefix="$2" link_dir="${3:-/usr/bin}"
+    local mapping link_name source_name source
+    local -a mappings=()
+
+    [[ -d "$link_dir" ]] || {
+        log_err "Database client link directory is missing: ${link_dir}"
+        return 1
+    }
+    case "$engine" in
+        mariadb)
+            mappings=(
+                mariadb:mariadb
+                mariadb-dump:mariadb-dump
+                mariadb-check:mariadb-check
+                mariadb-admin:mariadb-admin
+                mariadb-import:mariadb-import
+                mysql:mariadb
+                mysqldump:mariadb-dump
+                mysqlcheck:mariadb-check
+                mysqladmin:mariadb-admin
+                mysqlimport:mariadb-import
+            )
+            ;;
+        mysql)
+            mappings=(
+                mysql:mysql
+                mysqldump:mysqldump
+                mysqlcheck:mysqlcheck
+                mysqladmin:mysqladmin
+                mysqlimport:mysqlimport
+            )
+            ;;
+        *)
+            log_err "Unsupported database engine for client links: ${engine}"
+            return 1
+            ;;
+    esac
+
+    for mapping in "${mappings[@]}"; do
+        link_name="${mapping%%:*}"
+        source_name="${mapping#*:}"
+        source="${prefix}/bin/${source_name}"
+        [[ -x "$source" ]] || {
+            log_err "Required ${engine} client is missing or not executable: ${source}"
+            return 1
+        }
+        ln -sfn "$source" "${link_dir}/${link_name}" || {
+            log_err "Cannot install database client link: ${link_dir}/${link_name}"
+            return 1
+        }
+    done
+    log_info "Database client commands reconciled for ${engine}: ${link_dir}"
+}
+
 _check_db_arch_support() {
     [[ "${ARCH}" = "x86_64" ]] && return 0
 
@@ -144,10 +202,10 @@ _install_mysql() {
     # Load timezone tables so named timezones (e.g. Asia/Taipei) work in queries
     _load_mysql_tz
 
-    # Symlinks
-    ln -sf /usr/local/mysql/bin/mysql /usr/bin/mysql
-    ln -sf /usr/local/mysql/bin/mysqldump /usr/bin/mysqldump
-    ln -sf /usr/local/mysql/bin/mysqladmin /usr/bin/mysqladmin
+    # Expose supported MySQL client commands to interactive shells, cron, SSH,
+    # WP-CLI, and other non-login consumers.
+    _install_database_client_links mysql /usr/local/mysql \
+        || die "Failed to expose MySQL client commands."
 
     # Add to library path
     echo "/usr/local/mysql/lib" > /etc/ld.so.conf.d/mysql.conf
@@ -200,15 +258,16 @@ _install_mariadb() {
 
     local i
     for ((i = 0; i < 60; i++)); do
-        /usr/local/mariadb/bin/mysqladmin -u root ping &>/dev/null && break
+        /usr/local/mariadb/bin/mariadb-admin -u root ping &>/dev/null && break
         sleep 2
     done
 
     _secure_mysql "$db_dir"
 
-    ln -sf /usr/local/mariadb/bin/mysql /usr/bin/mysql
-    ln -sf /usr/local/mariadb/bin/mysqldump /usr/bin/mysqldump
-    ln -sf /usr/local/mariadb/bin/mysqladmin /usr/bin/mysqladmin
+    # WP-CLI detects MariaDB and invokes mariadb, mariadb-dump, and
+    # mariadb-check rather than deprecated mysql aliases.
+    _install_database_client_links mariadb /usr/local/mariadb \
+        || die "Failed to expose MariaDB client commands."
 
     echo "/usr/local/mariadb/lib" > /etc/ld.so.conf.d/mariadb.conf
     ldconfig
@@ -240,8 +299,8 @@ _deploy_mysql_conf() {
 _load_mysql_tz() {
     local mysql_bin
     if [[ "${DB_Type}" = 'mariadb' ]]; then
-        mysql_bin=/usr/local/mariadb/bin/mysql
-        /usr/local/mariadb/bin/mysql_tzinfo_to_sql /usr/share/zoneinfo 2>/dev/null | ${mysql_bin} -u root mysql 2>/dev/null
+        mysql_bin=/usr/local/mariadb/bin/mariadb
+        /usr/local/mariadb/bin/mariadb-tzinfo-to-sql /usr/share/zoneinfo 2>/dev/null | ${mysql_bin} -u root mysql 2>/dev/null
     else
         mysql_bin=/usr/local/mysql/bin/mysql
         /usr/local/mysql/bin/mysql_tzinfo_to_sql /usr/share/zoneinfo 2>/dev/null | ${mysql_bin} -u root mysql 2>/dev/null
@@ -254,7 +313,7 @@ _secure_mysql() {
     local mysql_bin
 
     if [[ "${DB_Type}" = 'mariadb' ]]; then
-        mysql_bin=/usr/local/mariadb/bin/mysql
+        mysql_bin=/usr/local/mariadb/bin/mariadb
     else
         mysql_bin=/usr/local/mysql/bin/mysql
     fi

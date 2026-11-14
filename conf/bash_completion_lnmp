@@ -14,10 +14,10 @@ _lnmp_completion() {
             COMPREPLY=( $(compgen -W "add del list" -- "${cur}") )
             ;;
         ssl)
-            COMPREPLY=( $(compgen -W "install renew revoke list self client-upgrade" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "install renew revoke list self repair client-upgrade" -- "${cur}") )
             ;;
         db)
-            COMPREPLY=( $(compgen -W "add del list import export" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "add del list import export repair-clients" -- "${cur}") )
             ;;
         upgrade)
             COMPREPLY=( $(compgen -W "plan apply" -- "${cur}") )
@@ -39,6 +39,11 @@ _lnmp_completion() {
         install)
             if [[ "${COMP_WORDS[1]}" = "ssl" ]]; then
                 COMPREPLY=( $(compgen -W "--domains --webroot --keytype --challenge --dns-provider --dns-credentials --dns-sleep --no-vhost-update" -- "${cur}") )
+            fi
+            ;;
+        self)
+            if [[ "${COMP_WORDS[1]}" = "ssl" ]]; then
+                COMPREPLY=( $(compgen -W "--domains" -- "${cur}") )
             fi
             ;;
         --challenge)

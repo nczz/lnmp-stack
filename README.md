@@ -358,12 +358,29 @@ its root-only home. Manual DNS mode is intentionally unsupported because it
 cannot renew automatically.
 
 ```bash
-lnmp ssl renew                        # Renew all certificates
-lnmp ssl renew example.com            # Renew specific domain
-lnmp ssl revoke example.com           # Revoke and remove certificate
-lnmp ssl list                         # List certs with expiry
-lnmp ssl self example.com             # Generate self-signed certificate
+lnmp ssl renew                         # Repair managed vhosts, then renew all
+lnmp ssl renew example.com             # Repair managed vhosts, then renew one
+lnmp ssl revoke example.com            # Revoke and remove certificate
+lnmp ssl list                          # List certs with expiry
+lnmp ssl self example.com              # Self-signed cert; copies vhost aliases
+lnmp ssl self example.com --domains "www.example.com"
+lnmp --yes ssl repair                  # Migrate legacy HTTP-01 vhost layouts
 ```
+
+HTTPS redirects use a server-level request-URI guard that excludes
+`/.well-known/acme-challenge/` before returning 301; they do not create a
+second `location /` that could conflict with WordPress or other rewrite rules.
+The ACME challenge also has an explicit higher-priority location in both HTTP
+and HTTPS server blocks. This keeps renewal reachable after cached
+authorizations expire. `ssl repair`
+migrates existing project-generated vhosts atomically, runs `nginx -t`, reloads
+only valid configuration, and restores the originals on failure. It prints the
+root-only backup directory under `/var/backups/lnmp/`. `ssl renew` runs the same
+idempotent repair before invoking acme.sh.
+
+Self-signed certificates include the primary domain and aliases as SANs. When
+`--domains` is omitted, aliases come from the existing vhost's first
+`server_name`; an existing HTTPS block is reconciled instead of skipped.
 
 - Uses Let's Encrypt as default CA
 - EC-256 key type by default
@@ -420,6 +437,7 @@ lnmp db del mysite                    # Drop database + user
 lnmp db list                          # List databases and users
 lnmp db export mysite                 # Export to .sql.gz
 lnmp db import mysite backup.sql.gz   # Import (supports .gz)
+lnmp --yes db repair-clients           # Reconcile MariaDB/MySQL commands in PATH
 
 # Interactive mode
 lnmp db add
@@ -427,6 +445,12 @@ lnmp db add
 # Reset MySQL root password (reads from lnmp.conf.local)
 lnmp reset-password
 ```
+
+Fresh installs and database upgrades expose MariaDB's current `mariadb`,
+`mariadb-dump`, `mariadb-check`, `mariadb-admin`, and `mariadb-import` names,
+plus legacy compatibility names. After updating an existing host, run
+`lnmp --yes db repair-clients` once so WP-CLI database commands work from login
+shells, non-interactive SSH, and cron without a custom `PATH`.
 
 ## PHP Extensions
 

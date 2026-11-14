@@ -17,7 +17,7 @@ fi
 
 # Find mysql binary
 MYSQL_BIN=""
-for bin in /usr/local/mysql/bin/mysql /usr/local/mariadb/bin/mysql; do
+for bin in /usr/local/mariadb/bin/mariadb /usr/local/mysql/bin/mysql; do
     [[ -x "$bin" ]] && MYSQL_BIN="$bin" && break
 done
 [[ -n "$MYSQL_BIN" ]] || { echo "MySQL not found."; exit 1; }

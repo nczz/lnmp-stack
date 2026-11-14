@@ -7,6 +7,7 @@ LNMP_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 [[ -f "${LNMP_DIR}/lnmp.conf.local" ]] && source "${LNMP_DIR}/lnmp.conf.local"
 [[ -f "${LNMP_DIR}/lib/common.sh" ]] && source "${LNMP_DIR}/lib/common.sh"
+[[ -f "${LNMP_DIR}/lib/mysql.sh" ]] && source "${LNMP_DIR}/lib/mysql.sh"
 
 
 _run_mysql_root() {
@@ -33,7 +34,7 @@ _run_mysql_root() {
 
 _mysql_cmd() {
     local mysql_bin=""
-    for bin in /usr/local/mysql/bin/mysql /usr/local/mariadb/bin/mysql /usr/bin/mysql; do
+    for bin in /usr/local/mariadb/bin/mariadb /usr/local/mysql/bin/mysql /usr/bin/mariadb /usr/bin/mysql; do
         [[ -x "$bin" ]] && mysql_bin="$bin" && break
     done
     [[ -n "$mysql_bin" ]] || die_code "$EX_UNAVAILABLE" "MySQL client not found."
@@ -217,7 +218,7 @@ db_export() {
     validate_mysql_name "database name" "$dbname"
 
     local dump_bin=""
-    for bin in /usr/local/mysql/bin/mysqldump /usr/local/mariadb/bin/mysqldump /usr/bin/mysqldump; do
+    for bin in /usr/local/mariadb/bin/mariadb-dump /usr/local/mysql/bin/mysqldump /usr/bin/mariadb-dump /usr/bin/mysqldump; do
         [[ -x "$bin" ]] && dump_bin="$bin" && break
     done
     [[ -n "$dump_bin" ]] || die_code "$EX_UNAVAILABLE" "mysqldump not found."
@@ -230,11 +231,25 @@ db_export() {
     echo "Exported: ${outfile} ($(du -h "$outfile" | cut -f1))"
 }
 
+db_repair_clients() {
+    check_root
+    if [[ -x /usr/local/mariadb/bin/mariadb ]]; then
+        _install_database_client_links mariadb /usr/local/mariadb \
+            || die_code "$EX_UNAVAILABLE" "Failed to repair MariaDB client commands."
+    elif [[ -x /usr/local/mysql/bin/mysql ]]; then
+        _install_database_client_links mysql /usr/local/mysql \
+            || die_code "$EX_UNAVAILABLE" "Failed to repair MySQL client commands."
+    else
+        die_code "$EX_UNAVAILABLE" "No supported MySQL or MariaDB installation found."
+    fi
+    echo "Database client commands repaired."
+}
+
 show_usage() {
     cat <<'EOF'
 Usage:
-  lnmp db {add|del|list|import|export}
-  db.sh {add|del|list|import|export}
+  lnmp db {add|del|list|import|export|repair-clients}
+  db.sh {add|del|list|import|export|repair-clients}
 
 Commands:
   add <name> [user] --password-file <file>
@@ -243,6 +258,8 @@ Commands:
   list                  List databases and non-system users.
   import <name> <file>  Import .sql or .sql.gz into database.
   export <name>         Export database to <name>_YYYYmmdd_HHMMSS.sql.gz.
+  repair-clients          Reconcile vendor-current and compatibility client
+                          commands in /usr/bin; requires root.
 
 Agent / CI rules:
   - Use lnmp --yes db ... for deterministic non-interactive execution.
@@ -250,6 +267,8 @@ Agent / CI rules:
   - Use --password-file for db add secrets; positional passwords are rejected
     in non-interactive mode.
   - Exit 64 = bad/missing/invalid input; 69 = mysql/mysqldump unavailable.
+  - Run `lnmp --yes db repair-clients` after updating an existing MariaDB
+    installation so WP-CLI can find mariadb, mariadb-dump, and mariadb-check.
 EOF
 }
 
@@ -296,6 +315,12 @@ case "${1:-}" in
         if has_help_arg "$@"; then echo "Usage: lnmp db export <name>"; exit 0; fi
         [[ $# -le 1 ]] || { show_usage; die_code "$EX_USAGE" "Unexpected argument: $2"; }
         db_export "$@"
+        ;;
+    repair-clients)
+        shift
+        if has_help_arg "$@"; then echo "Usage: lnmp db repair-clients"; exit 0; fi
+        reject_extra_args "lnmp db repair-clients" "$@"
+        db_repair_clients
         ;;
     --help|-h|help) show_usage; exit 0 ;;
     "")

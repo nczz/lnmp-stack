@@ -106,6 +106,23 @@ dig +short <domain> AAAA
 lnmp firewall allow 80
 ```
 
+Managed HTTPS redirects MUST use a server-level request-URI guard that excludes
+`/.well-known/acme-challenge/` before returning 301. They MUST NOT use an
+unconditional server-level return, and MUST NOT add a second `location /`
+because rewrite includes such as WordPress may already own that location.
+Both port-80 and port-443 managed server blocks MUST expose an explicit
+`^~ /.well-known/acme-challenge/` exception.
+After updating project code on a previously provisioned host, agents MUST run:
+
+```bash
+lnmp --yes ssl repair
+```
+
+The repair is idempotent. It backs up every changed vhost under
+`/var/backups/lnmp/`, runs `nginx -t`, reloads only valid configuration, and
+restores the originals if validation or reload fails. Agents MUST report the
+printed backup path. `lnmp ssl renew` performs the same repair before renewal.
+
 ### DNS-01
 
 DNS-01 supports wildcard SANs and does not require a vhost, port 80, or A/AAAA
@@ -191,6 +208,22 @@ lnmp --yes ssl install site.example.com --domains "*.site.example.com" \
 The primary name remains non-wildcard so certificate paths and vhost ownership
 stay deterministic. acme.sh saves renewal state under `/usr/local/acme.sh`;
 LNMP enforces mode `700` on that home and `600` on its configuration files.
+
+### Reconcile an existing host after a project update
+```bash
+lnmp --yes ssl repair
+lnmp --yes db repair-clients
+lnmp upgrade plan
+```
+
+The database repair exposes current MariaDB client names required by WP-CLI
+(`mariadb`, `mariadb-dump`, `mariadb-check`) plus admin/import and legacy
+compatibility names. Fresh installs and database upgrades do this
+automatically; existing installations require the explicit one-time repair.
+
+`lnmp ssl self <domain>` copies aliases from the existing vhost into both
+certificate SANs and the HTTPS `server_name` by default. Use `--domains` to
+explicitly select names when no vhost exists or to override detected aliases.
 
 ### Inventory and apply pinned security upgrades
 ```bash

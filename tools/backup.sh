@@ -13,8 +13,16 @@ echo "=== LNMP Backup — ${DATE} ==="
 # Backup all databases
 echo "Backing up databases..."
 if [[ -f /root/.my.cnf ]]; then
-    MYSQL_BIN=$(command -v mysql || echo /usr/local/mysql/bin/mysql)
-    MYSQLDUMP_BIN=$(command -v mysqldump || echo /usr/local/mysql/bin/mysqldump)
+    MYSQL_BIN=""
+    for bin in /usr/local/mariadb/bin/mariadb /usr/local/mysql/bin/mysql /usr/bin/mariadb /usr/bin/mysql; do
+        [[ -x "$bin" ]] && { MYSQL_BIN="$bin"; break; }
+    done
+    MYSQLDUMP_BIN=""
+    for bin in /usr/local/mariadb/bin/mariadb-dump /usr/local/mysql/bin/mysqldump /usr/bin/mariadb-dump /usr/bin/mysqldump; do
+        [[ -x "$bin" ]] && { MYSQLDUMP_BIN="$bin"; break; }
+    done
+    [[ -n "$MYSQL_BIN" && -n "$MYSQLDUMP_BIN" ]] \
+        || { echo "Database client commands not found." >&2; exit 69; }
 
     databases=$($MYSQL_BIN -N -e "SHOW DATABASES;" 2>/dev/null | grep -Ev '^(information_schema|performance_schema|sys)$')
     for db in $databases; do

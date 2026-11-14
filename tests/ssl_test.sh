@@ -253,6 +253,7 @@ env LNMP_ASSUME_YES=1 \
     NGINX_BIN="$NGINX_BIN" SYSTEMCTL_BIN="$SYSTEMCTL_BIN" \
     WEB_OWNER="$(id -u):$(id -g)" \
     ACME_HOME="$ACME_HOME" SSL_DIR="$SSL_DIR" \
+    LNMP_BACKUP_ROOT="${TEST_TMP}/backups" \
     bash "${REPO_DIR}/tools/vhost.sh" add vhost.example.com \
         --domains '*.vhost.example.com' --rewrite none --ssl \
         --challenge dns --dns-provider dns_cf --dns-credentials "$CREDENTIALS" \
@@ -271,25 +272,141 @@ grep -Fq 'server_name vhost.example.com *.vhost.example.com;' \
     || fail 'wildcard DNS-01 alias missing from generated vhost'
 grep -Fq 'listen 443 ssl;' "${VHOST_TEST_DIR}/conf/vhost.example.com.conf" \
     || fail 'DNS-01 vhost integration did not install the HTTPS server block'
+assert_eq 2 \
+    "$(grep -Fc 'location ^~ /.well-known/acme-challenge/' "${VHOST_TEST_DIR}/conf/vhost.example.com.conf")" \
+    'new vhost HTTP and HTTPS ACME challenge locations'
 if grep -Fq 'return 301 https' "${VHOST_TEST_DIR}/conf/vhost.example.com.conf"; then
     fail 'vhost without --redirect must not force an HTTP redirect'
 fi
-if sed --version 2>/dev/null | grep -Fq 'GNU sed'; then
-    : > "$ACME_CALL_LOG"
-    env LNMP_ASSUME_YES=1 \
-        VHOST_DIR="${VHOST_TEST_DIR}/conf" \
-        WEBROOT_BASE="${VHOST_TEST_DIR}/www" \
-        REWRITE_DIR="${VHOST_TEST_DIR}/rewrite" \
+: > "$ACME_CALL_LOG"
+env LNMP_ASSUME_YES=1 \
+    VHOST_DIR="${VHOST_TEST_DIR}/conf" \
+    WEBROOT_BASE="${VHOST_TEST_DIR}/www" \
+    REWRITE_DIR="${VHOST_TEST_DIR}/rewrite" \
+    NGINX_BIN="$NGINX_BIN" SYSTEMCTL_BIN="$SYSTEMCTL_BIN" \
+    WEB_OWNER="$(id -u):$(id -g)" \
+    ACME_HOME="$ACME_HOME" SSL_DIR="$SSL_DIR" \
+    LNMP_BACKUP_ROOT="${TEST_TMP}/backups" \
+    bash "${REPO_DIR}/tools/vhost.sh" add redirect.example.com \
+        --rewrite none --ssl --challenge dns --dns-provider dns_cf \
+        --dns-credentials "$CREDENTIALS" --redirect \
+        >"${TEST_TMP}/redirect-vhost-output" 2>&1
+REDIRECT_CONF="${VHOST_TEST_DIR}/conf/redirect.example.com.conf"
+grep -Fq "    if (\$request_uri !~ \"^/\\.well-known/acme-challenge/\") {" \
+    "$REDIRECT_CONF" \
+    || fail '--redirect must exempt the HTTP-01 challenge before returning 301'
+assert_eq 2 "$(grep -Fc 'location ^~ /.well-known/acme-challenge/' "$REDIRECT_CONF")" \
+    'HTTP and HTTPS ACME challenge locations'
+
+SELF_CONF="${VHOST_TEST_DIR}/conf/self.example.com.conf"
+SELF_WEBROOT="${VHOST_TEST_DIR}/www/self.example.com"
+mkdir -p "$SELF_WEBROOT"
+cat > "$SELF_CONF" <<EOF
+server {
+    listen 80;
+    server_name self.example.com www.self.example.com;
+    root ${SELF_WEBROOT};
+    index index.html;
+}
+EOF
+if ! env LNMP_ASSUME_YES=1 \
+        ACME_HOME="$ACME_HOME" SSL_DIR="$SSL_DIR" VHOST_DIR="${VHOST_TEST_DIR}/conf" \
         NGINX_BIN="$NGINX_BIN" SYSTEMCTL_BIN="$SYSTEMCTL_BIN" \
-        WEB_OWNER="$(id -u):$(id -g)" \
-        ACME_HOME="$ACME_HOME" SSL_DIR="$SSL_DIR" \
-        bash "${REPO_DIR}/tools/vhost.sh" add redirect.example.com \
-            --rewrite none --ssl --challenge dns --dns-provider dns_cf \
-            --dns-credentials "$CREDENTIALS" --redirect \
-            >"${TEST_TMP}/redirect-vhost-output" 2>&1
-    grep -Fq "return 301 https://\$host\$request_uri;" \
-        "${VHOST_TEST_DIR}/conf/redirect.example.com.conf" \
-        || fail '--redirect did not add the HTTPS redirect'
+        LNMP_BACKUP_ROOT="${TEST_TMP}/backups" \
+        bash "${REPO_DIR}/tools/ssl.sh" self self.example.com \
+        >"${TEST_TMP}/self-output" 2>&1; then
+    cat "${TEST_TMP}/self-output" >&2
+    fail 'self-signed certificate command failed'
 fi
+assert_eq 2 "$(grep -Fc 'server_name self.example.com www.self.example.com;' "$SELF_CONF")" \
+    'self-signed HTTPS aliases'
+openssl x509 -in "${SSL_DIR}/self.example.com/fullchain.pem" -noout -ext subjectAltName \
+    | grep -Fq 'DNS:self.example.com, DNS:www.self.example.com' \
+    || fail 'self-signed certificate SANs must include vhost aliases'
+
+LEGACY_CONF="${VHOST_TEST_DIR}/conf/legacy.example.com.conf"
+cat > "$LEGACY_CONF" <<'EOF'
+server {
+    listen 80;
+    server_name legacy.example.com;
+    root /tmp/legacy;
+    index index.html;
+
+    return 301 https://$host$request_uri;
+
+    location ^~ /.well-known/acme-challenge/ {
+        allow all;
+    }
+}
+server {
+    listen 443 ssl;
+    server_name legacy.example.com;
+    root /tmp/legacy;
+    index index.html;
+
+    location ~ /\. {
+        deny all;
+    }
+}
+EOF
+env LNMP_ASSUME_YES=1 \
+    ACME_HOME="$ACME_HOME" SSL_DIR="$SSL_DIR" VHOST_DIR="${VHOST_TEST_DIR}/conf" \
+    NGINX_BIN="$NGINX_BIN" SYSTEMCTL_BIN="$SYSTEMCTL_BIN" \
+    LNMP_BACKUP_ROOT="${TEST_TMP}/backups" \
+    bash "${REPO_DIR}/tools/ssl.sh" repair >"${TEST_TMP}/repair-output" 2>&1
+assert_eq 2 "$(grep -Fc 'location ^~ /.well-known/acme-challenge/' "$LEGACY_CONF")" \
+    'legacy HTTP and HTTPS ACME challenge locations'
+if grep -Fqx "    return 301 https://\$host\$request_uri;" "$LEGACY_CONF"; then
+    fail 'legacy server-level redirect was not migrated'
+fi
+grep -Fq "    if (\$request_uri !~ \"^/\\.well-known/acme-challenge/\") {" \
+    "$LEGACY_CONF" \
+    || fail 'legacy redirect migration must exempt the HTTP-01 challenge'
+grep -Fq 'Backup:' "${TEST_TMP}/repair-output" \
+    || fail 'repair output must identify the migration backup'
+cp "$LEGACY_CONF" "${TEST_TMP}/legacy.after"
+env LNMP_ASSUME_YES=1 \
+    ACME_HOME="$ACME_HOME" SSL_DIR="$SSL_DIR" VHOST_DIR="${VHOST_TEST_DIR}/conf" \
+    NGINX_BIN="$NGINX_BIN" SYSTEMCTL_BIN="$SYSTEMCTL_BIN" \
+    LNMP_BACKUP_ROOT="${TEST_TMP}/backups" \
+    bash "${REPO_DIR}/tools/ssl.sh" repair >"${TEST_TMP}/repair-second-output" 2>&1
+cmp -s "${TEST_TMP}/legacy.after" "$LEGACY_CONF" \
+    || fail 'vhost repair must be idempotent'
+grep -Fq 'no migration required' "${TEST_TMP}/repair-second-output" \
+    || fail 'idempotent repair must report that no migration is required'
+
+ROLLBACK_CONF="${VHOST_TEST_DIR}/conf/rollback.example.com.conf"
+cat > "$ROLLBACK_CONF" <<'EOF'
+server {
+    listen 80;
+    server_name rollback.example.com;
+    root /tmp/rollback;
+    index index.html;
+    return 301 https://$host$request_uri;
+}
+server {
+    listen 443 ssl;
+    server_name rollback.example.com;
+    root /tmp/rollback;
+    index index.html;
+}
+EOF
+cp "$ROLLBACK_CONF" "${TEST_TMP}/rollback.before"
+FAIL_NGINX_BIN="${TEST_TMP}/nginx-fail"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$FAIL_NGINX_BIN"
+chmod +x "$FAIL_NGINX_BIN"
+set +e
+env LNMP_ASSUME_YES=1 \
+    ACME_HOME="$ACME_HOME" SSL_DIR="$SSL_DIR" VHOST_DIR="${VHOST_TEST_DIR}/conf" \
+    NGINX_BIN="$FAIL_NGINX_BIN" SYSTEMCTL_BIN="$SYSTEMCTL_BIN" \
+    LNMP_BACKUP_ROOT="${TEST_TMP}/rollback-backups" \
+    bash "${REPO_DIR}/tools/ssl.sh" repair >"${TEST_TMP}/rollback-output" 2>&1
+rc=$?
+set -e
+assert_eq 69 "$rc" 'failed Nginx validation exit code'
+cmp -s "${TEST_TMP}/rollback.before" "$ROLLBACK_CONF" \
+    || fail 'failed Nginx validation must restore the original vhost'
+grep -Fq 'original files were restored' "${TEST_TMP}/rollback-output" \
+    || fail 'rollback diagnostic must identify restoration'
 
 printf 'ssl_test: PASS\n'

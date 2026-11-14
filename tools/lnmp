@@ -147,10 +147,10 @@ Commands:
   upgrade apply ...     Compile/deploy selected or all outdated components
   kill                  Force-kill LNMP processes
   vhost add|del|list    Manage Nginx virtual hosts
-  ssl install|renew|revoke|list|self|client-upgrade
-                        Manage certificates and the pinned acme.sh client
-  db add|del|list|import|export
-                        Manage databases; db add uses --password-file in automation
+  ssl install|renew|revoke|list|self|repair|client-upgrade
+                        Manage certificates, vhost renewal safety, and acme.sh
+  db add|del|list|import|export|repair-clients
+                        Manage databases and reconcile client commands
   firewall ...          Manage ufw/iptables rules
   addons ...            Manage PHP extensions and optional services
   reset-password        Reset MySQL/MariaDB root password

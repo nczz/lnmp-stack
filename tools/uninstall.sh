@@ -41,11 +41,11 @@ if [[ "$MODE" = 'normal' ]]; then
 
     # Backup databases
     MYSQL_BIN=""
-    for bin in /usr/local/mysql/bin/mysql /usr/local/mariadb/bin/mysql; do
+    for bin in /usr/local/mariadb/bin/mariadb /usr/local/mysql/bin/mysql; do
         [[ -x "$bin" ]] && MYSQL_BIN="$bin" && break
     done
     MYSQLDUMP_BIN=""
-    for bin in /usr/local/mysql/bin/mysqldump /usr/local/mariadb/bin/mysqldump; do
+    for bin in /usr/local/mariadb/bin/mariadb-dump /usr/local/mysql/bin/mysqldump; do
         [[ -x "$bin" ]] && MYSQLDUMP_BIN="$bin" && break
     done
 
@@ -113,7 +113,7 @@ systemctl daemon-reload
 # ─── Remove symlinks ───
 
 echo "Removing symlinks..."
-rm -f /usr/bin/{nginx,mysql,mysqldump,mysqladmin,php,phpize,php-config,pecl,php-fpm,redis-cli,redis-server,lnmp,wp}
+rm -f /usr/bin/{nginx,mysql,mysqldump,mysqlcheck,mysqladmin,mysqlimport,mariadb,mariadb-dump,mariadb-check,mariadb-admin,mariadb-import,php,phpize,php-config,pecl,php-fpm,redis-cli,redis-server,lnmp,wp}
 rm -f /usr/local/bin/{composer,wp}
 
 # ─── Remove configs ───

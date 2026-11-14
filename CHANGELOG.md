@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.12 — 2026-11-14
+
+### Renewal, Self-Signed Alias, and MariaDB Client Fixes
+
+- Keep HTTP-01 reachable after HTTPS redirects, add the challenge exception to generated 443 blocks, and provide an atomic `lnmp ssl repair` migration with root-only backups and Nginx rollback for existing vhosts.
+- Make self-signed certificates copy existing vhost aliases into SANs and reconcile an existing HTTPS `server_name` instead of leaving aliases on the TLS reject catch-all.
+- Expose MariaDB's current `mariadb`, `mariadb-dump`, `mariadb-check`, `mariadb-admin`, and `mariadb-import` commands alongside compatibility names during fresh installs, upgrades, and `lnmp db repair-clients`, so WP-CLI database commands work in login, SSH, and cron environments.
+- Add regression coverage for ACME redirect precedence, legacy vhost migration, SAN aliases, database client reconciliation, and update CI to the Node 24-based `actions/checkout` v5.
+
 ## v1.7.11 — 2026-11-14
 
 ### Opt-in DNS-01 Certificates
