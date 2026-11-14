@@ -158,9 +158,11 @@ Commands:
 Agent / CI rules:
   - Prefer: lnmp --yes <subcommand> ...
   - DB secrets: use lnmp --yes db add <db> [user] --password-file <600-file>.
-  - SSL install: create the vhost first; DNS A/AAAA must point here; port 80
-    must be reachable for HTTP-01 validation.
-  - Inputs are allowlisted before root-owned files or root SQL are touched.
+  - SSL install defaults to HTTP-01. DNS-01 requires --challenge dns, a
+    supported --dns-provider, and least-privilege provider credentials; it
+    supports wildcard SANs without requiring port 80.
+  - Inputs and secret-file permissions are validated before root-owned files
+    or root SQL are touched.
 
 Exit codes:
   0 success | 64 bad/missing/invalid argument | 69 dependency unavailable |

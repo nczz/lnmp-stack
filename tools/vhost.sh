@@ -3,9 +3,12 @@
 # Interactive or CLI mode
 set -euo pipefail
 
-VHOST_DIR="/usr/local/nginx/conf/vhost"
-WEBROOT_BASE="/home/wwwroot"
-REWRITE_DIR="/usr/local/nginx/conf/rewrite"
+VHOST_DIR="${VHOST_DIR:-/usr/local/nginx/conf/vhost}"
+WEBROOT_BASE="${WEBROOT_BASE:-/home/wwwroot}"
+REWRITE_DIR="${REWRITE_DIR:-/usr/local/nginx/conf/rewrite}"
+NGINX_BIN="${NGINX_BIN:-/usr/local/nginx/sbin/nginx}"
+SYSTEMCTL_BIN="${SYSTEMCTL_BIN:-systemctl}"
+WEB_OWNER="${WEB_OWNER:-www:www}"
 
 # Load shared config + helpers (is_interactive, die_code, EX_* codes).
 _LNMP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -24,27 +27,34 @@ Required:
   <domain>                 Primary ASCII/punycode DNS name.
 
 Options:
-  --domains "d1 d2"        Additional ASCII/punycode DNS aliases.
+  --domains "d1 d2"        Additional DNS aliases. With DNS-01, a left-most
+                           wildcard such as *.example.com is accepted.
   --webroot /path          Absolute web root; default: /home/wwwroot/<domain>.
   --rewrite name           Existing rewrite rule basename: wordpress, laravel,
                            thinkphp, yii2, discuzx, none.
   --ssl                    Issue/install Let's Encrypt certificate after vhost
                            reloads successfully.
+  --challenge http|dns     SSL challenge type; default: http.
+  --dns-provider name      DNS-01 hook: dns_cf, dns_aws, dns_ali, or dns_dp.
+  --dns-credentials file   Optional root/operator-owned mode-600 credential file.
+  --dns-sleep seconds      Optional DNS propagation wait, 1-3600.
   --redirect               With --ssl, force HTTP -> HTTPS 301 redirect.
   --help, -h               Show this help.
 
 Agent / CI rules:
   - Use lnmp --yes vhost add ... to guarantee no prompts.
-  - Missing/invalid domain, alias, webroot, or rewrite exits 64 before writing
-    root-owned Nginx config.
-  - --ssl uses HTTP-01: DNS A/AAAA must point to this host and port 80 must be
-    reachable from the internet before running.
-  - --ssl reloads Nginx once for the HTTP vhost, then calls ssl install.
+  - Missing/invalid domain, alias, webroot, rewrite, or DNS option exits 64
+    before writing root-owned Nginx config.
+  - --ssl defaults to HTTP-01. DNS-01 is explicit and requires a supported DNS
+    provider plus least-privilege credentials or an AWS IAM role.
+  - The HTTP vhost is reloaded before either certificate challenge runs.
 
 Examples:
   lnmp --yes vhost add example.com --rewrite wordpress
-  lnmp --yes vhost add example.com --domains "www.example.com" --rewrite laravel
-  ACME_EMAIL=admin@example.com lnmp --yes vhost add example.com --ssl --redirect
+  lnmp --yes vhost add example.com --domains "www.example.com" --ssl
+  lnmp --yes vhost add example.com --domains "*.example.com" --ssl \
+    --challenge dns --dns-provider dns_cf \
+    --dns-credentials /etc/lnmp/cloudflare-dns.env --redirect
 EOF
 }
 
@@ -67,16 +77,21 @@ _validate_rewrite() {
 
 vhost_add() {
     local domain="" more_domains="" webroot="" rewrite="none" enable_ssl="n" force_redirect="n"
+    local challenge="http" dns_provider="" dns_credentials="" dns_sleep=""
 
     # Parse CLI args
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --domains)  _require_option_arg "$1" "${2:-}"; more_domains="$2"; shift 2 ;;
-            --webroot)  _require_option_arg "$1" "${2:-}"; webroot="$2"; shift 2 ;;
-            --rewrite)  _require_option_arg "$1" "${2:-}"; rewrite="$2"; shift 2 ;;
-            --ssl)      enable_ssl="y"; shift ;;
-            --redirect) force_redirect="y"; shift ;;
-            --help|-h)  show_add_usage; exit 0 ;;
+            --domains)         _require_option_arg "$1" "${2:-}"; more_domains="$2"; shift 2 ;;
+            --webroot)         _require_option_arg "$1" "${2:-}"; webroot="$2"; shift 2 ;;
+            --rewrite)         _require_option_arg "$1" "${2:-}"; rewrite="$2"; shift 2 ;;
+            --challenge)       _require_option_arg "$1" "${2:-}"; challenge="$2"; shift 2 ;;
+            --dns-provider)    _require_option_arg "$1" "${2:-}"; dns_provider="$2"; shift 2 ;;
+            --dns-credentials) _require_option_arg "$1" "${2:-}"; dns_credentials="$2"; shift 2 ;;
+            --dns-sleep)       _require_option_arg "$1" "${2:-}"; dns_sleep="$2"; shift 2 ;;
+            --ssl)             enable_ssl="y"; shift ;;
+            --redirect)        force_redirect="y"; shift ;;
+            --help|-h)         show_add_usage; exit 0 ;;
             -*)         show_add_usage; die_code "$EX_USAGE" "Unknown option: $1" ;;
             *)          [[ -z "$domain" ]] && domain="$1" || more_domains="${more_domains:+$more_domains }$1"; shift ;;
         esac
@@ -113,10 +128,41 @@ vhost_add() {
 
     webroot="${webroot:-${WEBROOT_BASE}/${domain}}"
     validate_domain "$domain"
+    [[ "$challenge" = http || "$challenge" = dns ]] \
+        || die_code "$EX_USAGE" "Invalid challenge '${challenge}'. Use http or dns."
+    if [[ ! "${enable_ssl}" =~ ^[Yy]$ && ( "$challenge" != http || -n "$dns_provider$dns_credentials$dns_sleep" ) ]]; then
+        die_code "$EX_USAGE" "DNS challenge options require --ssl."
+    fi
+    if [[ "$challenge" = http ]]; then
+        [[ -z "$dns_provider$dns_credentials$dns_sleep" ]] \
+            || die_code "$EX_USAGE" "DNS options require --challenge dns."
+    else
+        [[ -n "$dns_provider" ]] \
+            || die_code "$EX_USAGE" "DNS-01 requires --dns-provider."
+        validate_dns_provider "$dns_provider"
+        [[ -z "$dns_credentials" ]] || validate_private_file "DNS credentials file" "$dns_credentials"
+        if [[ -n "$dns_sleep" ]]; then
+            if [[ ! "$dns_sleep" =~ ^[0-9]+$ ]] \
+                || (( dns_sleep < 1 || dns_sleep > 3600 )); then
+                die_code "$EX_USAGE" "--dns-sleep must be an integer from 1 to 3600."
+            fi
+        fi
+    fi
     local -a more_domain_list=()
+    local alias normalized seen=",${domain,,},"
     if [[ -n "$more_domains" ]]; then
         read -r -a more_domain_list <<< "$more_domains"
-        validate_domain_list "${more_domain_list[@]}"
+        for alias in "${more_domain_list[@]}"; do
+            if [[ "$challenge" = dns ]]; then
+                validate_certificate_domain "$alias"
+            else
+                validate_domain "$alias"
+            fi
+            normalized="${alias,,}"
+            [[ "$seen" != *",${normalized},"* ]] \
+                || die_code "$EX_USAGE" "Duplicate vhost domain: ${alias}"
+            seen+="${normalized},"
+        done
     fi
     validate_abs_path "webroot" "$webroot"
     _validate_rewrite "$rewrite"
@@ -124,7 +170,7 @@ vhost_add() {
 
     # Create webroot
     mkdir -p "$webroot"
-    chown www:www "$webroot"
+    chown "$WEB_OWNER" "$webroot"
 
     # Generate vhost config
     local server_names="$domain"
@@ -162,14 +208,22 @@ server {
 EOF
 
     # Reload Nginx so the new vhost is active (required before SSL verification)
-    /usr/local/nginx/sbin/nginx -t && systemctl reload nginx
+    "$NGINX_BIN" -t && "$SYSTEMCTL_BIN" reload nginx
 
-    # SSL setup (needs working vhost to serve .well-known/acme-challenge/)
+    # Reload the HTTP vhost first. HTTP-01 serves its challenge there; DNS-01
+    # does not require port 80 but keeps one creation path for managed sites.
     if [[ "${enable_ssl}" =~ ^[Yy]$ ]]; then
         local script_dir
         script_dir="$(cd "$(dirname "$0")" && pwd)"
-        local -a ssl_args=("$domain" --webroot "$webroot")
+        local -a ssl_args=("$domain" --challenge "$challenge")
         [[ -n "$more_domains" ]] && ssl_args+=(--domains "$more_domains")
+        if [[ "$challenge" = http ]]; then
+            ssl_args+=(--webroot "$webroot")
+        else
+            ssl_args+=(--dns-provider "$dns_provider")
+            [[ -n "$dns_credentials" ]] && ssl_args+=(--dns-credentials "$dns_credentials")
+            [[ -n "$dns_sleep" ]] && ssl_args+=(--dns-sleep "$dns_sleep")
+        fi
         FORCE_REDIRECT="$force_redirect" bash "${script_dir}/ssl.sh" install "${ssl_args[@]}"
     fi
 

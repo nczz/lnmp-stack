@@ -20,6 +20,8 @@ jobs:
           shellcheck -x install.sh lib/*.sh tools/*.sh tools/lnmp tests/*.sh
       - name: Upgrade behavior
         run: bash tests/upgrade_test.sh
+      - name: SSL behavior
+        run: bash tests/ssl_test.sh
 
   ubuntu-compatibility:
     runs-on: ubuntu-24.04
@@ -36,6 +38,8 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends bash coreutils grep sed gawk util-linux
       - name: Upgrade behavior
         run: bash tests/upgrade_test.sh
+      - name: SSL behavior
+        run: bash tests/ssl_test.sh
       - name: OS detection
         env:
           EXPECTED_UBUNTU: ${{ matrix.ubuntu }}

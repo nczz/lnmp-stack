@@ -33,8 +33,8 @@ error (exit `64`) written to **stderr** — it never silently hangs.
 
 Every third-party probe that can prompt when it inherits a TTY MUST
 independently disable interaction, close stdin with `</dev/null`, and enforce a
-Setting `Auto_Install`, `--yes`, or `NONINTERACTIVE` is not sufficient when the
-child program implements its own prompts. Composer probes MUST use
+bounded timeout. Setting `Auto_Install`, `--yes`, or `NONINTERACTIVE` is not
+sufficient when the child program implements its own prompts. Composer probes MUST use
 `composer_version`, which also sets `COMPOSER_ALLOW_SUPERUSER=1`; agents MUST
 NOT invoke the Composer PHAR directly for inventory or verification.
 
@@ -63,7 +63,8 @@ lnmp upgrade plan
 Input allowlists are intentionally strict before root-owned files or root SQL
 are touched:
 
-- domains / aliases: ordinary ASCII or punycode DNS names only
+- primary domains: ordinary ASCII/punycode DNS names; only DNS-01 certificate
+  SANs may use one left-most wildcard (`*.example.com`)
 - database and database-user names: `A-Z`, `a-z`, `0-9`, `_`, max 64 chars
 - custom webroots: absolute paths without spaces or shell/Nginx metacharacters
 - rewrite rules: installed rewrite basename, e.g. `wordpress`, `laravel`, `none`
@@ -78,8 +79,8 @@ Branch on these instead of parsing text:
 |------|---------|---------------|
 | `0`  | success | — |
 | `64` | `EX_USAGE` — bad/missing argument | required or validated value not supplied / invalid in non-interactive mode |
-| `69` | `EX_UNAVAILABLE` — dependency missing | acme.sh / mysql client could not be installed or found |
-| `75` | `EX_TEMPFAIL` — transient, safe to retry | cert issuance failed (DNS not propagated, port 80 blocked) |
+| `69` | `EX_UNAVAILABLE` — dependency/credential missing | acme.sh, DNS hook, DNS credentials, or mysql client unavailable |
+| `75` | `EX_TEMPFAIL` — transient, safe to retry | ACME validation, DNS provider API/propagation/CAA, or port 80 failure |
 
 `75` specifically means "retry later after fixing the environment" — the
 command itself is fine.
@@ -88,30 +89,49 @@ command itself is fine.
 
 ## 3. SSL certificate issuance — preconditions (READ BEFORE ISSUING)
 
-`lnmp ssl install` / `lnmp vhost add --ssl` uses **acme.sh in webroot mode**
-with Let's Encrypt (HTTP-01 challenge). ALL of the following must hold, or
-issuance fails with `EX_TEMPFAIL (75)`:
+`lnmp ssl install` and `lnmp vhost add --ssl` use Let's Encrypt through the
+repository-pinned acme.sh client. **HTTP-01 remains the default.** DNS-01 is an
+explicit extension selected with `--challenge dns`; agents MUST NOT silently
+change challenge type.
 
-1. **DNS resolves to this host.** The domain's `A` (and `AAAA` if you serve
-   IPv6) record must already point to this server and be propagated. Verify:
-   ```bash
-   dig +short <domain> A          # must return this host's IPv4
-   dig +short <domain> AAAA       # must return this host's IPv6 (if applicable)
-   ```
-2. **A vhost exists and serves the ACME challenge path.** `lnmp vhost add`
-   creates a port-80 server block that already allows
-   `/.well-known/acme-challenge/`. If issuing SSL separately, add the vhost
-   first.
-3. **Port 80 is reachable from the internet.** If a firewall is on, open it:
-   ```bash
-   lnmp firewall allow 80
-   ```
-   (HTTP-01 validation always hits port 80, even when the final site is HTTPS.)
-4. **acme.sh is available**, OR an email is resolvable so it can be installed
-   unattended (see §4). If acme.sh cannot be installed, you get
-   `EX_UNAVAILABLE (69)`.
+### HTTP-01
 
-If any precondition is unmet, fix it and retry — do not loop blindly.
+All names MUST resolve to this host, share the selected webroot, and be served
+by an existing port-80 vhost at `/.well-known/acme-challenge/`. Port 80 MUST be
+reachable from the internet even when the final site redirects to HTTPS.
+
+```bash
+dig +short <domain> A
+dig +short <domain> AAAA
+lnmp firewall allow 80
+```
+
+### DNS-01
+
+DNS-01 supports wildcard SANs and does not require a vhost, port 80, or A/AAAA
+records pointing to this server. It MUST use one of the allowlisted API hooks:
+`dns_cf`, `dns_aws`, `dns_ali`, or `dns_dp`. Manual DNS mode is prohibited
+because it cannot renew unattended.
+
+Provider credentials MUST be least-privilege TXT record credentials. Supply
+them as provider environment variables or an absolute `--dns-credentials`
+file containing literal, unquoted `NAME=value` records. That file MUST be a
+non-symlink regular file owned by the operator with no group/other access
+(mode `600` recommended). Credentials MUST NOT appear in command arguments,
+logs, commits, issue comments, or agent output.
+
+| Hook | Required credential source |
+|------|----------------------------|
+| `dns_cf` | `CF_Token`; optional `CF_Account_ID`, `CF_Zone_ID` |
+| `dns_aws` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, or ECS/EC2 IAM role |
+| `dns_ali` | `Ali_Key` + `Ali_Secret` |
+| `dns_dp` | `DP_Id` + `DP_Key` |
+
+Before concluding that DNS-01 is broken, distinguish API authentication,
+TXT create/delete permission, authoritative propagation, CAA policy, and CA
+rate limits. Exit `69` means the client/hook/credential is unavailable; exit
+`75` means issuance or renewal can be retried after correcting the environment.
+Never loop blindly.
 
 ---
 
@@ -156,6 +176,21 @@ lnmp --yes ssl install site.example.com
 # multi-domain SAN cert (all names must point here and share the webroot):
 lnmp --yes ssl install site.example.com --domains "www.example.com"
 ```
+
+### Issue a wildcard certificate with DNS-01
+```bash
+install -d -m 700 /etc/lnmp
+install -m 600 /dev/null /etc/lnmp/cloudflare-dns.env
+printf '%s\n' 'CF_Token=REPLACE_WITH_ZONE_SCOPED_TOKEN' \
+  > /etc/lnmp/cloudflare-dns.env
+lnmp --yes ssl install site.example.com --domains "*.site.example.com" \
+  --challenge dns --dns-provider dns_cf \
+  --dns-credentials /etc/lnmp/cloudflare-dns.env
+```
+
+The primary name remains non-wildcard so certificate paths and vhost ownership
+stay deterministic. acme.sh saves renewal state under `/usr/local/acme.sh`;
+LNMP enforces mode `700` on that home and `600` on its configuration files.
 
 ### Inventory and apply pinned security upgrades
 ```bash
@@ -206,9 +241,9 @@ When you cannot prompt, these MUST be passed as arguments or the command exits `
 
 | Command | Required args |
 |---------|---------------|
-| `vhost add <domain>` | `<domain>` |
+| `vhost add <domain>` | `<domain>`; DNS-01 additionally requires `--ssl --challenge dns --dns-provider <hook>` and provider credentials/role |
 | `vhost del <domain>` | `<domain>` |
-| `ssl install <domain>` | `<domain>` |
+| `ssl install <domain>` | `<domain>`; DNS-01 additionally requires `--challenge dns --dns-provider <hook>` and provider credentials/role |
 | `ssl revoke <domain>` | `<domain>` |
 | `ssl self <domain>` | `<domain>` |
 | `db add <name> [user] --password-file <file>` | `<name>` and a root/operator-only password file (user defaults to name) |
@@ -217,9 +252,9 @@ When you cannot prompt, these MUST be passed as arguments or the command exits `
 | `db export <name>` | `<name>` |
 | `upgrade apply <selection>` | `outdated`, `all`, or one or more component names; an empty selection exits `64` |
 
-Optional values (extra domains, webroot, rewrite, redirect choice) safely fall
-back to sensible defaults when not supplied, but supplied values must pass the
-allowlists in §1.
+HTTP-01 remains the default. Optional values fall back safely, but supplied
+domains, webroots, rewrites, challenge settings, providers, propagation waits,
+and secret files MUST pass the allowlists and ownership/mode checks above.
 
 ---
 

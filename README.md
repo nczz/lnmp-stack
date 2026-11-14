@@ -306,32 +306,69 @@ checks pass. Custom data directories remain in place.
 ## Virtual Host Management
 
 ```bash
-# CLI mode (non-interactive)
+# HTTP-01 remains the default.
 lnmp vhost add example.com --rewrite wordpress --ssl --redirect
-lnmp vhost add example.com --domains "www.example.com" --rewrite laravel --ssl
+
+# DNS-01 is explicit and supports wildcard aliases.
+lnmp vhost add example.com --domains "*.example.com" --ssl \
+  --challenge dns --dns-provider dns_cf \
+  --dns-credentials /etc/lnmp/cloudflare-dns.env --redirect
+
 lnmp vhost del example.com
 lnmp vhost list
-
-# Interactive mode
-lnmp vhost add
 ```
 
-Options: `--domains`, `--webroot`, `--rewrite`, `--ssl`, `--redirect`
+Options include `--domains`, `--webroot`, `--rewrite`, `--ssl`, `--challenge`,
+`--dns-provider`, `--dns-credentials`, `--dns-sleep`, and `--redirect`.
 
 ## SSL Certificate Management
 
+HTTP-01 stays backward-compatible and is the default:
+
 ```bash
-lnmp ssl install example.com          # Issue Let's Encrypt certificate
+lnmp ssl install example.com
+```
+
+DNS-01 is opt-in. It does not require port 80, an existing vhost, or A/AAAA
+records pointing at this host, and it can issue wildcard certificates:
+
+```bash
+install -d -m 700 /etc/lnmp
+install -m 600 /dev/null /etc/lnmp/cloudflare-dns.env
+printf '%s\n' 'CF_Token=REPLACE_WITH_ZONE_SCOPED_TOKEN' \
+  > /etc/lnmp/cloudflare-dns.env
+
+lnmp --yes ssl install example.com --domains "*.example.com" \
+  --challenge dns --dns-provider dns_cf \
+  --dns-credentials /etc/lnmp/cloudflare-dns.env
+```
+
+| Provider | Hook | Required credential source |
+|----------|------|----------------------------|
+| Cloudflare | `dns_cf` | `CF_Token`; optional `CF_Account_ID`, `CF_Zone_ID` |
+| AWS Route53 | `dns_aws` | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY`, or ECS/EC2 IAM role |
+| Alibaba Cloud DNS | `dns_ali` | `Ali_Key` + `Ali_Secret` |
+| DNSPod.cn | `dns_dp` | `DP_Id` + `DP_Key` |
+
+The credentials file is parsed as literal, unquoted `NAME=value` records; it
+must be a non-symlink regular file owned by the operator and inaccessible to
+group/others. Provider credentials are never accepted as CLI values or printed
+by LNMP. acme.sh persists the credentials needed for unattended renewal under
+its root-only home. Manual DNS mode is intentionally unsupported because it
+cannot renew automatically.
+
+```bash
 lnmp ssl renew                        # Renew all certificates
 lnmp ssl renew example.com            # Renew specific domain
 lnmp ssl revoke example.com           # Revoke and remove certificate
-lnmp ssl list                         # List certs with expiry (✅/⚠️/🔴)
+lnmp ssl list                         # List certs with expiry
 lnmp ssl self example.com             # Generate self-signed certificate
 ```
 
-- Uses Let's Encrypt as default CA (not ZeroSSL)
+- Uses Let's Encrypt as default CA
 - EC-256 key type by default
-- DH parameters auto-generated during install
+- HTTP-01 remains the default; DNS-01 must be selected explicitly
+- ACME account/domain configuration is restricted to mode `600`
 - HTTPS catch-all with `ssl_reject_handshake` prevents cert leakage via IP
 
 ## Agent / Non-Interactive Usage
@@ -368,8 +405,10 @@ Behavior in non-interactive mode:
   `--no-interaction`, so `--auto` remains unattended even inside `tmux`,
   `screen`, or another inherited pseudo-terminal.
 
-**SSL preconditions** (or issuance returns `75`): DNS `A`/`AAAA` already points
-here, port 80 reachable, vhost exists to serve `/.well-known/acme-challenge/`.
+**HTTP-01 preconditions** (or issuance returns `75`): DNS `A`/`AAAA` points
+here, port 80 is reachable, and the vhost serves `/.well-known/acme-challenge/`.
+DNS-01 instead requires a supported provider, least-privilege TXT record
+credentials (or AWS role), authoritative propagation, and compatible CAA.
 
 ## Database Management
 ```bash

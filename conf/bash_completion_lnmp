@@ -33,8 +33,19 @@ _lnmp_completion() {
         add)
             # vhost add options
             if [[ "${COMP_WORDS[1]}" = "vhost" ]]; then
-                COMPREPLY=( $(compgen -W "--domains --webroot --rewrite --ssl --redirect" -- "${cur}") )
+                COMPREPLY=( $(compgen -W "--domains --webroot --rewrite --ssl --challenge --dns-provider --dns-credentials --dns-sleep --redirect" -- "${cur}") )
             fi
+            ;;
+        install)
+            if [[ "${COMP_WORDS[1]}" = "ssl" ]]; then
+                COMPREPLY=( $(compgen -W "--domains --webroot --keytype --challenge --dns-provider --dns-credentials --dns-sleep --no-vhost-update" -- "${cur}") )
+            fi
+            ;;
+        --challenge)
+            COMPREPLY=( $(compgen -W "http dns" -- "${cur}") )
+            ;;
+        --dns-provider)
+            COMPREPLY=( $(compgen -W "dns_cf dns_aws dns_ali dns_dp" -- "${cur}") )
             ;;
         --rewrite)
             local rules=""

@@ -2,6 +2,15 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.11 — 2026-11-14
+
+### Opt-in DNS-01 Certificates
+
+- Add explicit, non-default DNS-01 issuance for Cloudflare, AWS Route53, Alibaba Cloud DNS, and DNSPod, including wildcard SANs and vhost passthrough while preserving HTTP-01 defaults.
+- Parse provider credentials from root/operator-owned private files or provider environment variables, reject unknown keys/providers and insecure files, redact secrets, and harden persisted acme.sh state.
+- Add actionable provider/propagation/CAA diagnostics, renewal failure handling, shell completion, agent operating contracts, and behavior tests for HTTP/DNS argument separation, wildcard validation, credential policy, vhost integration, and renewal.
+- Honor the vhost `--redirect` choice in non-interactive flows instead of forcing HTTP-to-HTTPS redirects whenever `--ssl` is used.
+
 ## v1.7.10 — 2026-11-14
 
 ### Unattended Composer Probes

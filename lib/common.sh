@@ -77,6 +77,53 @@ validate_domain_list() {
     done
 }
 
+# Certificate SANs may use a single left-most wildcard with DNS-01. Primary
+# vhost/file names still use validate_domain() and therefore remain ordinary.
+validate_certificate_domain() {
+    local domain="$1"
+    if [[ "$domain" == \*.* ]]; then
+        [[ ${#domain} -le 253 ]] \
+            || die_code "$EX_USAGE" "Invalid certificate domain '${domain}': too long."
+        validate_domain "${domain#*.}"
+        return 0
+    fi
+    validate_domain "$domain"
+}
+
+validate_certificate_domain_list() {
+    local domain
+    for domain in "$@"; do
+        validate_certificate_domain "$domain"
+    done
+}
+
+validate_dns_provider() {
+    case "$1" in
+        dns_cf|dns_aws|dns_ali|dns_dp) return 0 ;;
+        *)
+            die_code "$EX_USAGE" \
+                "Unsupported DNS provider '$1'. Use one of: dns_cf, dns_aws, dns_ali, dns_dp."
+            ;;
+    esac
+}
+
+validate_private_file() {
+    local kind="$1" path="$2" mode
+    validate_abs_path "$kind" "$path"
+    [[ -f "$path" && ! -L "$path" && -r "$path" ]] \
+        || die_code "$EX_USAGE" "${kind^} must be a readable regular file, not a symlink: ${path}"
+    [[ -O "$path" ]] \
+        || die_code "$EX_USAGE" "${kind^} must be owned by the current operator: ${path}"
+    if ! mode=$(stat -c '%a' "$path" 2>/dev/null); then
+        mode=$(stat -f '%Lp' "$path" 2>/dev/null) \
+            || die_code "$EX_USAGE" "Cannot inspect ${kind} permissions: ${path}"
+    fi
+    [[ "$mode" =~ ^[0-7]{3,4}$ ]] \
+        || die_code "$EX_USAGE" "Invalid ${kind} permissions on ${path}: ${mode}"
+    (( (8#$mode & 077) == 0 )) \
+        || die_code "$EX_USAGE" "${kind^} must not be accessible by group or others: ${path} (mode ${mode})."
+}
+
 validate_mysql_name() {
     local kind="$1" value="$2"
     [[ "$value" =~ ^[A-Za-z0-9_]{1,64}$ ]] \
