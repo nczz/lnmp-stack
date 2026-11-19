@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.13 — 2026-11-20
+
+### Nginx and PHP Security Updates
+
+- Update Nginx stable from 1.30.6 to 1.30.7 for the nine vulnerabilities disclosed on 2026-11-18, including the major HTTP/2 flow-control and TLS request-body issues.
+- Update the active-support PHP 8.4 branch from 8.4.27 to the 8.4.28 security release, covering the 2026-11-19 PHP-FPM, session, Date, DOM, Phar, SOAP, CGI, and stream-wrapper advisories.
+- Pin both upstream source archives by verified SHA-256, retain the session upload-progress restriction as defense in depth, and keep Nginx/PHP upgrades within their existing release series so they remain eligible for automated rollback-aware deployment.
+
 ## v1.7.12 — 2026-11-14
 
 ### Renewal, Self-Signed Alias, and MariaDB Client Fixes

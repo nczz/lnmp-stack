@@ -159,8 +159,8 @@ _enforce_php_security_baseline() {
     local security_ini='/usr/local/php/etc/php.d/99-lnmp-security.ini'
     mkdir -p /usr/local/php/etc/php.d
     cat > "$security_ini" <<'EOF'
-; PHP's 2026-10-23 advisory recommends disabling this feature until a release
-; containing the complete CVE-2026-115560 fix is available.
+; Defense in depth for session upload handling. PHP 8.4.28 contains the complete
+; CVE-2026-115560 fix, but LNMP does not enable upload-progress state by default.
 session.upload_progress.enabled=0
 EOF
     if ! /usr/local/php/bin/php -r \

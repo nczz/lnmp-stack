@@ -212,18 +212,18 @@ assert_eq MISSING "$(_upgrade_version_status '' 1.0.0)" 'missing version'
 assert_eq CURRENT "$(_upgrade_version_status 1.0.0 1.0.0)" 'current version'
 assert_eq OUTDATED "$(_upgrade_version_status 1.0.0 1.0.1)" 'patch upgrade'
 assert_eq AHEAD "$(_upgrade_version_status 1.1.0 1.0.9)" 'downgrade refusal'
-assert_eq 8.4 "$(_upgrade_version_series 8.4.27)" 'PHP release series'
+assert_eq 8.4 "$(_upgrade_version_series 8.4.28)" 'PHP release series'
 assert_eq 11.4 "$(_upgrade_version_series 11.4.13-MariaDB)" 'MariaDB release series'
 
-_upgrade_requires_explicit_review php 8.3.15 8.4.27 \
+_upgrade_requires_explicit_review php 8.3.15 8.4.28 \
     || fail 'PHP series transition must require review'
 _upgrade_requires_explicit_review db 10.11.11 11.4.13 \
     || fail 'MariaDB series transition must require review'
-_upgrade_requires_explicit_review nginx 1.26.3 1.30.6 \
+_upgrade_requires_explicit_review nginx 1.26.3 1.30.7 \
     || fail 'Nginx series transition must require review'
 _upgrade_requires_explicit_review redis 7.2.7 8.10.3 \
     || fail 'Redis major transition must require review'
-! _upgrade_requires_explicit_review php 8.4.25 8.4.27 \
+! _upgrade_requires_explicit_review php 8.4.27 8.4.28 \
     || fail 'PHP patch upgrade must remain automatable'
 ! _upgrade_requires_explicit_review redis 8.10.1 8.10.3 \
     || fail 'Redis patch upgrade must remain automatable'
@@ -272,7 +272,7 @@ Nginx_Modules_Options=''
 Enable_Nginx_Lua=y
 _upgrade_validate_nginx_modules
 unset REDIS_CLI_BIN REDIS_CONFIG_FILE REDIS_ARGS_FILE
-NGINX_BUILD_OUTPUT='nginx version: nginx/1.30.6 configure arguments: --with-http_ssl_module'
+NGINX_BUILD_OUTPUT='nginx version: nginx/1.30.7 configure arguments: --with-http_ssl_module'
 
 # Model versions installed by historical repository releases. These paths are
 # intentionally classified without using the production host's filesystem.
