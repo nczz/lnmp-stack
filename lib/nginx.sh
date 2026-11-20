@@ -17,7 +17,8 @@ install_nginx() {
         for patch_index in "${!OPENSSL_PATCH_URLS[@]}"; do
             download_src "OpenSSL security patch $((patch_index + 1))" \
                 "${OPENSSL_PATCH_URLS[$patch_index]}" \
-                "${OPENSSL_PATCH_SHA256S[$patch_index]}"
+                "${OPENSSL_PATCH_SHA256S[$patch_index]}" \
+                "$OPENSSL_PATCH_ACCEPT"
         done
     fi
 

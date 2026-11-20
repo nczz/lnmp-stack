@@ -20,6 +20,29 @@ _queue_legacy_imap_extension() {
     esac
 }
 
+_deploy_php_candidate() {
+    local candidate="$1" live_prefix="$2" service="${3:-php-fpm}"
+    local previous
+    [[ -d "$candidate" && -d "$live_prefix" ]] || return 1
+    previous=$(mktemp -d "${live_prefix}.previous.$(date +%Y%m%d%H%M%S)-XXXXXX") \
+        || return 1
+    rmdir "$previous" || return 1
+
+    if ! systemctl stop "$service"; then
+        return 1
+    fi
+    if ! mv "$live_prefix" "$previous"; then
+        systemctl start "$service" 2>/dev/null || true
+        return 1
+    fi
+    if ! mv "$candidate" "$live_prefix"; then
+        mv "$previous" "$live_prefix" 2>/dev/null || true
+        systemctl start "$service" 2>/dev/null || true
+        return 1
+    fi
+    rm -rf "$previous" || return 1
+}
+
 install_php() {
     local mode="${1:-install}"
     [[ "$mode" = 'install' || "$mode" = 'upgrade' ]] || die "Invalid PHP install mode: ${mode}"
@@ -94,10 +117,30 @@ install_php() {
     make -j"$(nproc)" 2>&1 | tee -a "$LOG_FILE"
     [[ ${PIPESTATUS[0]} -eq 0 ]] || die "PHP build failed"
     if [[ "$mode" = 'upgrade' ]]; then
-        systemctl stop php-fpm || die "Cannot stop PHP-FPM for deployment."
+        local stage candidate candidate_version
+        stage=$(mktemp -d /usr/local/.lnmp-php-stage.XXXXXX) \
+            || die "Cannot create PHP candidate staging directory."
+        candidate="${stage}/usr/local/php"
+        mkdir -p "$candidate" \
+            || { rm -rf "$stage"; die "Cannot prepare PHP candidate prefix."; }
+        cp -a /usr/local/php/. "$candidate/" \
+            || { rm -rf "$stage"; die "Cannot seed PHP candidate with active configuration."; }
+        if ! make install INSTALL_ROOT="$stage" 2>&1 | tee -a "$LOG_FILE"; then
+            rm -rf "$stage"
+            die "PHP candidate installation failed; active prefix was not changed."
+        fi
+        candidate_version=$("${candidate}/bin/php" -n -r 'echo PHP_VERSION;' 2>/dev/null || true)
+        [[ "$candidate_version" = "$PHP_VER" ]] \
+            || { rm -rf "$stage"; die "PHP candidate version mismatch: ${candidate_version:-unknown}."; }
+        if ! _deploy_php_candidate "$candidate" /usr/local/php; then
+            rm -rf "$stage"
+            die "PHP candidate deployment failed; the previous service was restarted when possible."
+        fi
+        rm -rf "$stage"
+    else
+        make install 2>&1 | tee -a "$LOG_FILE"
+        [[ ${PIPESTATUS[0]} -eq 0 ]] || die "PHP installation failed"
     fi
-    make install 2>&1 | tee -a "$LOG_FILE"
-    [[ ${PIPESTATUS[0]} -eq 0 ]] || die "PHP installation failed"
 
     if [[ "$mode" = 'install' ]]; then
         mkdir -p /usr/local/php/etc/php.d

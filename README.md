@@ -232,7 +232,13 @@ lnmp kill                 # Force kill all LNMP processes
 
 ```bash
 # Read-only; root is not required.
+lnmp upgrade inspect
 lnmp upgrade plan
+
+# Adopt an older lnmp-stack runtime after inspect passes. This records actual
+# runtime state and a protected configuration/build manifest; it does not
+# replace binaries or active configuration.
+sudo lnmp --yes upgrade adopt
 
 # Compile/deploy selected installed components.
 sudo lnmp --yes upgrade apply nginx php
@@ -240,6 +246,11 @@ sudo lnmp --yes upgrade apply nginx php
 # Apply installed patch-level updates marked OUTDATED. Missing optional
 # components and release-series transitions remain unchanged.
 sudo lnmp --yes upgrade apply outdated
+
+# Preview or perform safe cleanup. Transient source/build cache is removable;
+# pending, rolled-back, failed, and unclassified backups are never pruned.
+sudo lnmp --yes upgrade cleanup --dry-run
+sudo lnmp --yes upgrade cleanup
 
 # REVIEW means a release-series transition. Inspect application compatibility,
 # then approve that component explicitly.
@@ -254,25 +265,51 @@ ext:redis ext:imagick ext:apcu ext:swoole ext:memcached ext:imap
 phpmyadmin (legacy vulnerable deployment removal only)
 ```
 
+`inspect` checks OS and architecture, systemd ownership and `MainPID` binaries,
+native Nginx/PHP-FPM configuration tests, effective PHP configuration and scan
+directories, dynamic extensions, free space, and the normal version plan.
+`adopt` requires that preflight to pass, then records detected runtime versions
+and a root-only manifest with build arguments and configuration hashes. It does
+not rewrite active service or application files.
+
 `plan` compares runtime versions with `versions.conf`, checks the recorded
 OpenSSL patch-set marker for Nginx, and verifies the PHP upload-progress and
 public-`phpinfo.php` mitigations. Nginx, PHP, and database release-series
 changes plus Redis major-version changes are marked `REVIEW`; `outdated` never
 implicitly applies them. Explicitly selecting that component records the
-operator's approval and proceeds.
-The plan also prints the PHP configuration-preservation boundary, active
-dynamic extension directives, and any unmanaged extension that would block a
-PHP replacement.
+operator's approval and proceeds. The plan prints the actual PHP configuration
+and scan directories, active dynamic extension directives, and any unmanaged
+extension that would block a PHP replacement.
+
+Before downloading or compiling, `apply` rejects a service whose systemd
+`MainPID` does not execute the expected managed binary, invalid live
+configuration, a PHP configuration-root or scan-directory layout that needs an
+explicit migration, and less than 5 GiB free on any filesystem holding the
+repository build cache, `/usr/local` staging area, or protected backup
+directory. These checks run before runtime files are changed.
 
 `apply` recompiles source components, rebuilds installed project-supported PHP
 extensions after a PHP upgrade, validates the changed service, and restores the
-previous binary/prefix when validation fails. Each run writes a root-only log
-under `/var/log/lnmp/`. Core rollback copies are stored under
-`/var/backups/lnmp/`, rollback service health is checked and reported, and a
-process lock prevents concurrent upgrade runs. Legacy phpMyAdmin directories
-are marked `OUTDATED`; applying that item creates a protected backup under
-`/var/backups/lnmp/` and removes the web-served copy because no fixed upstream
-release is available.
+previous binary/prefix when validation fails. PHP is installed into a
+same-filesystem candidate prefix seeded from the active configuration, checked
+for the exact target version, and swapped into place only after the core build
+succeeds; PHP-FPM is not stopped during core PHP compilation. Each run writes
+a root-only log under `/var/log/lnmp/`. Core rollback copies are stored under
+`/var/backups/lnmp/`, carry an explicit completion or rollback status, and
+rollback service health is checked and reported. A process lock serializes
+adoption, deployment, and cleanup mutations. Verified downloads and extracted
+build trees under `src/` are transient and removed after every apply, including
+failed runs. Legacy phpMyAdmin directories are marked `OUTDATED`; applying that
+item creates a protected backup and removes the web-served copy because no
+fixed upstream release is available.
+
+`cleanup` always removes the transient source/build cache unless a configured
+Nginx custom-module path still references it. Completed rollback directories
+expire after 30 days while at least the newest three are retained. Pending,
+rolled-back, rollback-failed, symlinked, and legacy unclassified directories
+are never removed automatically. Use `--dry-run` before changing retention
+state; rollback copies needed for an observation window remain intentional,
+root-only data rather than temporary residue.
 
 An upgrade preserves operator-owned active configuration instead of
 regenerating it from fresh-install templates. Nginx/Redis configuration,

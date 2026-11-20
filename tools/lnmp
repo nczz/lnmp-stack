@@ -143,8 +143,10 @@ Commands:
   restart               Restart Nginx, database, and PHP-FPM
   reload                Test and reload Nginx, then reload PHP-FPM
   status                Show service status, versions, and common ports
-  upgrade plan          Inventory installed versions against pinned targets
-  upgrade apply ...     Compile/deploy selected or all outdated components
+  upgrade plan|inspect    Read-only version and adoption preflight inventory
+  upgrade adopt          Capture protected state for an older installation
+  upgrade apply ...      Compile/deploy selected or all outdated components
+  upgrade cleanup        Remove transient build cache and expire safe backups
   kill                  Force-kill LNMP processes
   vhost add|del|list    Manage Nginx virtual hosts
   ssl install|renew|revoke|list|self|repair|client-upgrade

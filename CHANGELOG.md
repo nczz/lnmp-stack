@@ -2,6 +2,18 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.14 — 2026-11-20
+
+### Legacy Adoption and Complete OpenSSL Security Baseline
+
+- Extend the OpenSSL 3.5 LTS patch set through the 2026-11-17 advisory with the three official fixes for CVE-2026-107493, CVE-2026-124709, and CVE-2026-35190, pinning all eight cumulative patch downloads by SHA-256 while the 3.5.10 release artifact remains unavailable.
+- Add read-only `lnmp upgrade inspect` and mutation-safe `upgrade adopt` so installations from older repository revisions can verify systemd process ownership, native configuration, PHP scan paths, extensions, capacity, and versions before recording protected runtime/configuration evidence.
+- Refuse upgrades before mutation when a service is not owned by the expected systemd unit and binary, live Nginx/PHP-FPM configuration is invalid, PHP needs an explicit configuration-root or scan-directory migration, or less than 5 GiB is available on a build-cache, staging, or protected-backup filesystem.
+- Discover the effective PHP config and scan directories instead of assuming a template path, preserve that location when rebuilding extensions, and use the explicit production FPM config for preflight, deployment, and rollback validation.
+- Stage PHP into a same-filesystem candidate prefix seeded from active configuration, verify the exact candidate version before stopping PHP-FPM, and swap the complete prefix only after compilation and installation succeed.
+- Add status-tagged root-only rollback directories and `lnmp upgrade cleanup`: transient verified downloads and build trees are removed after successful or failed applies, while automatic retention prunes only expired completed backups, keeps at least three, and never removes pending, rolled-back, failed, symlinked, or unclassified backups.
+- Fetch immutable OpenSSL commit patches through GitHub's API patch media type with verified digests, and add bounded download backoff so transient upstream 5xx responses fail safely before any runtime mutation instead of exhausting immediate retries.
+
 ## v1.7.13 — 2026-11-20
 
 ### Nginx and PHP Security Updates

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Bash completion intentionally word-splits compgen output into COMPREPLY.
+# shellcheck disable=SC2207,SC2012
 # lnmp command bash completion
 _lnmp_completion() {
     local cur prev
@@ -20,11 +22,16 @@ _lnmp_completion() {
             COMPREPLY=( $(compgen -W "add del list import export repair-clients" -- "${cur}") )
             ;;
         upgrade)
-            COMPREPLY=( $(compgen -W "plan apply" -- "${cur}") )
+            COMPREPLY=( $(compgen -W "plan inspect adopt apply cleanup" -- "${cur}") )
             ;;
         apply)
             if [[ "${COMP_WORDS[1]}" = "upgrade" ]]; then
                 COMPREPLY=( $(compgen -W "outdated all nginx php db redis memcached composer wp-cli acme ext:redis ext:imagick ext:apcu ext:swoole ext:memcached ext:imap phpmyadmin" -- "${cur}") )
+            fi
+            ;;
+        cleanup)
+            if [[ "${COMP_WORDS[1]}" = "upgrade" ]]; then
+                COMPREPLY=( $(compgen -W "--dry-run" -- "${cur}") )
             fi
             ;;
         addons)

@@ -224,15 +224,37 @@ upgrade_plan() {
     _upgrade_php_config_summary
 }
 
+_upgrade_php_config_root() {
+    local php_bin="${PHP_UPGRADE_BIN:-/usr/local/php/bin/php}" root
+    [[ -x "$php_bin" ]] || return 1
+    # PHP code is intentionally single-quoted so the shell cannot expand it.
+    # shellcheck disable=SC2016
+    root=$("$php_bin" -r '$f=php_ini_loaded_file(); if ($f !== false) echo dirname($f);' 2>/dev/null) \
+        || return 1
+    [[ "$root" = /* ]] || return 1
+    printf '%s' "$root"
+}
+
+_upgrade_php_scan_dir() {
+    local php_bin="${PHP_UPGRADE_BIN:-/usr/local/php/bin/php}" scan
+    [[ -x "$php_bin" ]] || return 1
+    scan=$("$php_bin" -r 'echo PHP_CONFIG_FILE_SCAN_DIR;' 2>/dev/null) || return 1
+    [[ "$scan" = /* ]] || return 1
+    printf '%s' "$scan"
+}
+
 _upgrade_php_config_summary() {
-    local extensions unknown='' ext
+    local extensions unknown='' ext root scan
     [[ -x "${PHP_UPGRADE_BIN:-/usr/local/php/bin/php}" ]] || return 0
+    root="${PHP_UPGRADE_CONFIG_ROOT:-$(_upgrade_php_config_root || true)}"
+    scan="${PHP_UPGRADE_SCAN_DIR:-$(_upgrade_php_scan_dir || true)}"
     extensions=$(_upgrade_php_dynamic_extensions | paste -sd, -)
     while IFS= read -r ext; do
         [[ -n "$ext" ]] || continue
         _upgrade_php_extension_managed "$ext" || unknown+="${unknown:+,}${ext}"
     done < <(_upgrade_php_dynamic_extensions)
-    printf 'PHP configuration: preserve php.ini, php-fpm.conf, php-fpm.d/* and php.d/*; update only project security overlays.\n'
+    printf 'PHP configuration: preserve php.ini, php-fpm.conf, pool files and active scan-dir INIs; update only project security overlays.\n'
+    printf 'PHP config root: %s; scan directory: %s\n' "${root:-unknown}" "${scan:-unknown}"
     printf 'PHP dynamic extensions: %s\n' "${extensions:-none}"
     [[ -z "$unknown" ]] \
         || printf 'PHP unmanaged extensions: %s (blocks PHP apply until build metadata is added)\n' "$unknown"
@@ -324,12 +346,15 @@ _upgrade_validate_nginx_modules() {
 }
 
 _upgrade_php_dynamic_extensions() {
-    local root="${PHP_UPGRADE_CONFIG_ROOT:-/usr/local/php/etc}"
-    local file line key value name
+    local root scan file line key value name
     local -a files=()
+    root="${PHP_UPGRADE_CONFIG_ROOT:-$(_upgrade_php_config_root || true)}"
+    [[ -n "$root" ]] || root=/usr/local/php/etc
+    scan="${PHP_UPGRADE_SCAN_DIR:-$(_upgrade_php_scan_dir || true)}"
+    [[ -n "$scan" ]] || scan="${root}/php.d"
     [[ -f "${root}/php.ini" ]] && files+=("${root}/php.ini")
     shopt -s nullglob
-    files+=("${root}/php.d/"*.ini)
+    files+=("${scan}/"*.ini)
     shopt -u nullglob
 
     for file in "${files[@]}"; do
@@ -370,6 +395,209 @@ _upgrade_validate_php_extensions() {
         "PHP uses unmanaged dynamic extension(s): ${unknown}. Add pinned source/build metadata to lib/extensions.sh before upgrading PHP; no binaries were changed. Log: ${LOG_FILE}"
 }
 
+_upgrade_service_owned() {
+    local service="$1" expected="$2" state pid actual expected_real
+    local proc_root="${LNMP_UPGRADE_PROC_ROOT:-/proc}"
+    state=$(systemctl is-active "$service" 2>/dev/null || true)
+    [[ "$state" = active ]] || {
+        log_err "${service} is '${state:-unknown}', not active under systemd."
+        return 1
+    }
+    pid=$(systemctl show "$service" -p MainPID --value 2>/dev/null || true)
+    [[ "$pid" =~ ^[1-9][0-9]*$ && -r "${proc_root}/${pid}/exe" ]] || {
+        log_err "${service} has no valid systemd MainPID."
+        return 1
+    }
+    actual=$(readlink -f "${proc_root}/${pid}/exe" 2>/dev/null || true)
+    [[ "$actual" != *' (deleted)' ]] || {
+        log_err "${service} MainPID ${pid} still runs a deleted executable; restart it before upgrading."
+        return 1
+    }
+    expected_real=$(readlink -f "$expected" 2>/dev/null || true)
+    [[ -n "$expected_real" && "$actual" = "$expected_real" ]] || {
+        log_err "${service} MainPID ${pid} runs ${actual:-unknown}; expected ${expected_real:-$expected}."
+        return 1
+    }
+}
+
+_upgrade_available_kb() {
+    local path="${1:-/usr/local}"
+    if [[ -n "${LNMP_UPGRADE_FREE_KB:-}" ]]; then
+        printf '%s' "$LNMP_UPGRADE_FREE_KB"
+        return 0
+    fi
+    while [[ ! -e "$path" && "$path" != / ]]; do
+        path=$(dirname "$path")
+    done
+    df -Pk "$path" 2>/dev/null | awk 'NR == 2 { print $4 }'
+}
+
+_upgrade_validate_capacity() {
+    local available path
+    local minimum="${LNMP_UPGRADE_MIN_FREE_KB:-5242880}"
+    local backup_dir="${LNMP_UPGRADE_BACKUP_DIR:-/var/backups/lnmp}"
+    local -a paths=("$cur_dir" /usr/local "$backup_dir")
+    [[ "$minimum" =~ ^[0-9]+$ ]] \
+        || die_code "$EX_UNAVAILABLE" "Invalid upgrade free-space requirement."
+    for path in "${paths[@]}"; do
+        available=$(_upgrade_available_kb "$path")
+        [[ "$available" =~ ^[0-9]+$ ]] \
+            || die_code "$EX_UNAVAILABLE" "Cannot determine upgrade free space for ${path}."
+        (( available >= minimum )) || die_code "$EX_UNAVAILABLE" \
+            "Upgrade requires at least $((minimum / 1024 / 1024)) GiB free on the filesystem containing ${path}; only $((available / 1024 / 1024)) GiB is available. No binaries were changed."
+    done
+}
+
+_upgrade_php_layout_supported() {
+    local config_root="${1:-$(_upgrade_php_config_root || true)}"
+    local scan="${2:-$(_upgrade_php_scan_dir || true)}"
+    [[ "$config_root" = /usr/local/php/etc ]] || {
+        log_err "PHP configuration root '${config_root:-unknown}' requires an explicit migration to /usr/local/php/etc."
+        return 1
+    }
+    [[ "$scan" = /usr/local/php/etc/php.d ]] || {
+        log_err "PHP scan directory '${scan:-unknown}' requires an explicit migration to /usr/local/php/etc/php.d."
+        return 1
+    }
+}
+
+_upgrade_preflight_components() {
+    local component service expected
+    for component in "$@"; do
+        case "$component" in
+            nginx)
+                _upgrade_service_owned nginx /usr/local/nginx/sbin/nginx \
+                    || die_code "$EX_UNAVAILABLE" "Nginx service ownership is unsafe; no binaries were changed."
+                /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1 \
+                    || die_code "$EX_UNAVAILABLE" "Current Nginx configuration is invalid; no binaries were changed."
+                _upgrade_validate_capacity
+                ;;
+            php)
+                _upgrade_service_owned php-fpm /usr/local/php/sbin/php-fpm \
+                    || die_code "$EX_UNAVAILABLE" "PHP-FPM service ownership is unsafe; no binaries were changed."
+                /usr/local/php/sbin/php-fpm -t -y /usr/local/php/etc/php-fpm.conf >/dev/null 2>&1 \
+                    || die_code "$EX_UNAVAILABLE" "Current PHP-FPM configuration is invalid; no binaries were changed."
+                _upgrade_php_layout_supported \
+                    || die_code "$EX_USAGE" "Unsupported PHP configuration layout; no binaries were changed."
+                _upgrade_validate_capacity
+                ;;
+            ext:*)
+                _upgrade_service_owned php-fpm /usr/local/php/sbin/php-fpm \
+                    || die_code "$EX_UNAVAILABLE" "PHP-FPM service ownership is unsafe; no binaries were changed."
+                /usr/local/php/sbin/php-fpm -t -y /usr/local/php/etc/php-fpm.conf >/dev/null 2>&1 \
+                    || die_code "$EX_UNAVAILABLE" "Current PHP-FPM configuration is invalid; no binaries were changed."
+                _upgrade_validate_capacity
+                ;;
+            db)
+                if [[ -x /usr/local/mariadb/bin/mariadbd ]]; then
+                    service=mariadb
+                    expected=/usr/local/mariadb/bin/mariadbd
+                else
+                    service=mysql
+                    expected=/usr/local/mysql/bin/mysqld
+                fi
+                _upgrade_service_owned "$service" "$expected" \
+                    || die_code "$EX_UNAVAILABLE" "Database service ownership is unsafe; no binaries were changed."
+                _upgrade_validate_capacity
+                ;;
+            redis)
+                _upgrade_service_owned redis /usr/local/redis/bin/redis-server \
+                    || die_code "$EX_UNAVAILABLE" "Redis service ownership is unsafe; no binaries were changed."
+                _upgrade_validate_capacity
+                ;;
+            memcached)
+                _upgrade_service_owned memcached /usr/local/memcached/bin/memcached \
+                    || die_code "$EX_UNAVAILABLE" "Memcached service ownership is unsafe; no binaries were changed."
+                _upgrade_validate_capacity
+                ;;
+        esac
+    done
+}
+
+upgrade_inspect() {
+    local failed=0 service expected state pid config_root scan available path index
+    local backup_dir="${LNMP_UPGRADE_BACKUP_DIR:-/var/backups/lnmp}"
+    local -a capacity_paths=("$cur_dir" /usr/local "$backup_dir")
+    local -a services=(nginx php-fpm)
+    local -a expected_bins=(/usr/local/nginx/sbin/nginx /usr/local/php/sbin/php-fpm)
+    if [[ -x /usr/local/mariadb/bin/mariadbd ]]; then
+        services+=(mariadb)
+        expected_bins+=(/usr/local/mariadb/bin/mariadbd)
+    elif [[ -x /usr/local/mysql/bin/mysqld ]]; then
+        services+=(mysql)
+        expected_bins+=(/usr/local/mysql/bin/mysqld)
+    fi
+    if [[ -x /usr/local/redis/bin/redis-server ]]; then
+        services+=(redis)
+        expected_bins+=(/usr/local/redis/bin/redis-server)
+    fi
+    if [[ -x /usr/local/memcached/bin/memcached ]]; then
+        services+=(memcached)
+        expected_bins+=(/usr/local/memcached/bin/memcached)
+    fi
+    printf 'OS: '
+    if [[ -r /etc/os-release ]]; then
+        (
+            # shellcheck disable=SC1091
+            source /etc/os-release
+            printf '%s %s\n' "${ID:-unknown}" "${VERSION_ID:-unknown}"
+        )
+    else
+        printf 'unknown\n'
+    fi
+    printf 'Architecture: %s\n' "$(uname -m)"
+    for index in "${!services[@]}"; do
+        service="${services[$index]}"
+        expected="${expected_bins[$index]}"
+        state=$(systemctl is-active "$service" 2>/dev/null || true)
+        pid=$(systemctl show "$service" -p MainPID --value 2>/dev/null || true)
+        printf 'Service %-9s state=%-8s MainPID=%s expected=%s\n' \
+            "$service" "${state:-unknown}" "${pid:-none}" "$expected"
+        _upgrade_service_owned "$service" "$expected" || failed=1
+    done
+    /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1 || {
+        log_err "Current Nginx configuration test failed."
+        failed=1
+    }
+    /usr/local/php/sbin/php-fpm -t -y /usr/local/php/etc/php-fpm.conf >/dev/null 2>&1 || {
+        log_err "Current PHP-FPM configuration test failed."
+        failed=1
+    }
+    config_root=$(_upgrade_php_config_root || true)
+    scan=$(_upgrade_php_scan_dir || true)
+    printf 'PHP config root: %s\n' "${config_root:-unknown}"
+    printf 'PHP scan directory: %s\n' "${scan:-unknown}"
+    for path in "${capacity_paths[@]}"; do
+        available=$(_upgrade_available_kb "$path")
+        if [[ "$available" =~ ^[0-9]+$ ]]; then
+            printf 'Free space for %-24s %s MiB\n' "$path" "$((available / 1024))"
+        else
+            printf 'Free space for %-24s unknown\n' "$path"
+            failed=1
+        fi
+    done
+    _upgrade_validate_php_extensions || failed=1
+    upgrade_plan
+    [[ $failed -eq 0 ]]
+}
+
+_upgrade_acquire_lock() {
+    command -v flock >/dev/null 2>&1 \
+        || die_code "$EX_UNAVAILABLE" "flock is required to serialize upgrades."
+    local lock_file="${LNMP_UPGRADE_LOCK_FILE:-/run/lock/lnmp-upgrade.lock}"
+    mkdir -p "$(dirname "$lock_file")"
+    exec 9>"$lock_file"
+    flock -n 9 || die "Another LNMP upgrade or cleanup is already running."
+}
+
+_upgrade_mark_backup() {
+    local root="$1" status="$2"
+    [[ "$status" =~ ^(completed|rolled-back|rollback-failed)$ ]] \
+        || die "Invalid backup status: ${status}"
+    printf '%s\n' "$status" > "${root}/status"
+    chmod 0600 "${root}/status"
+}
+
 _upgrade_rollback_ok() {
     log_warn "$1 rollback completed; restored backup: $2"
 }
@@ -380,12 +608,76 @@ _upgrade_rollback_failed() {
 }
 
 _upgrade_backup_root() {
-    local root
-    mkdir -p /var/backups/lnmp || die "Cannot create /var/backups/lnmp."
-    root=$(mktemp -d "/var/backups/lnmp/$(date +%Y%m%d%H%M%S)-XXXXXX") \
+    local kind="${1:-upgrade}" root base="${LNMP_UPGRADE_BACKUP_DIR:-/var/backups/lnmp}"
+    [[ "$kind" =~ ^[a-z0-9:-]+$ ]] || die "Invalid upgrade backup kind: ${kind}"
+    [[ ! -L "$base" ]] || die "Refusing symlinked upgrade backup directory: ${base}"
+    install -d -m 0700 "$base" || die "Cannot create upgrade backup directory: ${base}"
+    root=$(mktemp -d "${base}/$(date +%Y%m%d%H%M%S)-${kind//:/-}-XXXXXX") \
         || die "Cannot create an upgrade backup directory."
     chmod 0700 "$root" || die "Cannot protect upgrade backup directory: ${root}"
+    printf 'pending\n' > "${root}/status"
+    chmod 0600 "${root}/status"
     printf '%s' "$root"
+}
+
+_upgrade_cleanup_source_cache() {
+    local dry_run="${1:-n}" root="${LNMP_SOURCE_CACHE_ROOT:-${cur_dir}/src}"
+    [[ "$dry_run" = n || "$dry_run" = y ]] || die "Invalid cleanup dry-run value."
+    [[ "$root" = /* && "$root" != / && "$root" != "$cur_dir" ]] \
+        || die "Unsafe source-cache path: ${root}"
+    [[ ! -L "$root" ]] || die "Refusing symlinked source-cache path: ${root}"
+    [[ -d "$root" ]] || return 0
+    if [[ " ${Nginx_Modules_Options:-} " = *"${root}/"* ]]; then
+        log_warn "Source cache is referenced by Nginx_Modules_Options; preserving: ${root}"
+        return 0
+    fi
+    if [[ "$dry_run" = y ]]; then
+        printf 'Would remove verified-download/build cache: %s\n' "$root"
+        return 0
+    fi
+    cd "$cur_dir" || die "Cannot leave source-cache directory before cleanup."
+    rm -rf -- "$root" || die "Cannot remove source-cache directory: ${root}"
+    log_ok "Removed verified-download/build cache: ${root}"
+}
+
+_upgrade_prune_backups() {
+    local dry_run="${1:-n}" base="${LNMP_UPGRADE_BACKUP_DIR:-/var/backups/lnmp}"
+    local days="${LNMP_UPGRADE_BACKUP_DAYS:-30}" retain="${LNMP_UPGRADE_BACKUP_RETAIN:-3}"
+    local dir status total
+    local -a completed=()
+    [[ "$dry_run" = n || "$dry_run" = y ]] || die "Invalid cleanup dry-run value."
+    [[ "$days" =~ ^[0-9]+$ && "$retain" =~ ^[0-9]+$ ]] \
+        || die "Invalid backup retention policy."
+    [[ -d "$base" ]] || return 0
+    [[ ! -L "$base" ]] || die "Refusing symlinked upgrade backup directory: ${base}"
+    shopt -s nullglob
+    for dir in "$base"/*; do
+        [[ -d "$dir" && ! -L "$dir" && -f "${dir}/status" ]] || continue
+        status=$(<"${dir}/status")
+        [[ "$status" = completed ]] && completed+=("$dir")
+    done
+    shopt -u nullglob
+    total=${#completed[@]}
+    for dir in "${completed[@]}"; do
+        (( total > retain )) || break
+        [[ -n "$(find "$dir" -maxdepth 0 -mtime +"$days" -print 2>/dev/null)" ]] || continue
+        if [[ "$dry_run" = y ]]; then
+            printf 'Would remove expired completed rollback backup: %s\n' "$dir"
+        else
+            rm -rf -- "$dir" || die "Cannot remove expired rollback backup: ${dir}"
+            log_ok "Removed expired completed rollback backup: ${dir}"
+        fi
+        ((total -= 1))
+    done
+}
+
+upgrade_cleanup() {
+    local dry_run="${1:-n}"
+    check_root
+    _upgrade_acquire_lock
+    _upgrade_init_log
+    _upgrade_cleanup_source_cache "$dry_run"
+    _upgrade_prune_backups "$dry_run"
 }
 
 _upgrade_backup_config() {
@@ -578,6 +870,75 @@ _upgrade_restore_version_state() {
     fi
 }
 
+upgrade_adopt() {
+    local backup_root manifest component version openssl_version file
+    local config_root scan
+    check_root
+    _upgrade_acquire_lock
+    _upgrade_init_log
+    upgrade_inspect \
+        || die_code "$EX_UNAVAILABLE" "Existing installation failed adoption preflight; no runtime files were changed."
+
+    config_root=$(_upgrade_php_config_root) \
+        || die_code "$EX_UNAVAILABLE" "Cannot determine active PHP configuration root."
+    scan=$(_upgrade_php_scan_dir) \
+        || die_code "$EX_UNAVAILABLE" "Cannot determine active PHP scan directory."
+    backup_root=$(_upgrade_backup_root adoption)
+    manifest="${backup_root}/adoption-manifest"
+    install -m 0600 /dev/null "$manifest" || die "Cannot create adoption manifest."
+    {
+        printf 'created=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'host=%s\n' "$(hostname -f 2>/dev/null || hostname)"
+        printf 'architecture=%s\n' "$(uname -m)"
+        printf 'php_config_root=%s\n' "$config_root"
+        printf 'php_scan_dir=%s\n' "$scan"
+        printf 'nginx_build='
+        /usr/local/nginx/sbin/nginx -V 2>&1 | tr '\n' ';'
+        printf '\nphp_configure='
+        /usr/local/php/bin/php-config --configure-options 2>/dev/null || true
+        printf '\n'
+        for file in /usr/local/nginx/conf/nginx.conf \
+                /usr/local/nginx/conf/vhost/*.conf \
+                "${config_root}/php.ini" \
+                "${config_root}/php-fpm.conf" \
+                "${scan}"/*.ini \
+                "${config_root}/php-fpm.d"/*.conf \
+                /etc/systemd/system/nginx.service \
+                /etc/systemd/system/php-fpm.service; do
+            [[ -f "$file" && ! -L "$file" ]] || continue
+            printf 'config_sha256=%s  %s\n' "$(sha256sum "$file" | cut -d' ' -f1)" "$file"
+        done
+    } > "$manifest"
+    chmod 0600 "$manifest"
+
+    _upgrade_save_version_state "$backup_root"
+    for component in nginx php db redis memcached; do
+        version=$(_upgrade_runtime_version "$component")
+        [[ -n "$version" ]] || continue
+        case "$component" in
+            db)
+                if [[ -x /usr/local/mariadb/bin/mariadb ]]; then
+                    record_installed_version MARIADB "$version"
+                else
+                    record_installed_version MYSQL "$version"
+                fi
+                ;;
+            *) record_installed_version "${component^^}" "$version" ;;
+        esac
+    done
+    openssl_version=$(_upgrade_nginx_openssl_version)
+    openssl_version="${openssl_version%% *}"
+    [[ -n "$openssl_version" ]] && record_installed_version OPENSSL "$openssl_version"
+    for component in redis imagick apcu swoole memcached imap; do
+        version=$(_upgrade_runtime_version "ext:${component}")
+        [[ -n "$version" ]] \
+            && record_installed_version "PHP_EXT_${component^^}" "$version"
+    done
+    _upgrade_mark_backup "$backup_root" completed
+    log_ok "Existing LNMP installation adopted without changing runtime files."
+    log_ok "Protected adoption evidence: ${manifest}; previous state: ${backup_root}"
+}
+
 _upgrade_backup_nginx_runtime_libs() {
     local backup_root="$1" path
     local -a paths=()
@@ -601,7 +962,7 @@ _upgrade_restore_nginx_runtime_libs() {
 
 _upgrade_nginx() {
     local backup_root backup_bin
-    backup_root=$(_upgrade_backup_root)
+    backup_root=$(_upgrade_backup_root nginx)
     backup_bin="${backup_root}/nginx"
     cp -a /usr/local/nginx/sbin/nginx "$backup_bin" \
         || die "Cannot back up the current Nginx binary."
@@ -615,9 +976,12 @@ _upgrade_nginx() {
         _upgrade_restore_version_state "$backup_root"
         _upgrade_restore_nginx_runtime_libs "$backup_root"
         if /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1 \
+            && systemctl restart nginx \
             && systemctl is-active --quiet nginx; then
+            _upgrade_mark_backup "$backup_root" rolled-back
             _upgrade_rollback_ok Nginx "$backup_bin"
         else
+            _upgrade_mark_backup "$backup_root" rollback-failed
             _upgrade_rollback_failed Nginx "$backup_bin"
         fi
         return 1
@@ -636,19 +1000,26 @@ _upgrade_nginx() {
         if /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1 \
             && systemctl restart nginx \
             && systemctl is-active --quiet nginx; then
+            _upgrade_mark_backup "$backup_root" rolled-back
             _upgrade_rollback_ok Nginx "$backup_bin"
         else
+            _upgrade_mark_backup "$backup_root" rollback-failed
             _upgrade_rollback_failed Nginx "$backup_bin"
         fi
         return 1
     fi
+    _upgrade_mark_backup "$backup_root" completed
     log_ok "Nginx upgrade deployed. Previous binary: ${backup_bin}"
 }
 
 _upgrade_php() {
     local backup_root backup_php ext before_modules after_modules
     local -a installed_extensions=()
-    backup_root=$(_upgrade_backup_root)
+    PHP_INI_ROOT=$(_upgrade_php_config_root) \
+        || die "Cannot determine active PHP configuration root."
+    PHP_INI_SCAN_DIR=$(_upgrade_php_scan_dir) \
+        || die "Cannot determine active PHP scan directory."
+    backup_root=$(_upgrade_backup_root php)
     backup_php="${backup_root}/php"
     before_modules="${backup_root}/php-modules.before"
     after_modules="${backup_root}/php-modules.after"
@@ -665,7 +1036,12 @@ _upgrade_php() {
         [[ -n "$(_upgrade_runtime_version "ext:${ext}")" ]] && installed_extensions+=("$ext")
     done
 
-    if ( install_php upgrade && for ext in "${installed_extensions[@]}"; do install_extension "$ext" y; done ); then
+    if (
+        install_php upgrade
+        for ext in "${installed_extensions[@]}"; do
+            PHP_EXT_DIR='' install_extension "$ext" y
+        done
+    ); then
         _upgrade_php_modules > "$after_modules" \
             || log_err "Cannot inventory PHP modules after upgrade."
         chmod 0600 "$after_modules" 2>/dev/null || true
@@ -680,9 +1056,10 @@ _upgrade_php() {
                 "${backup_root}/php-fpm-systemd-overrides.diff" \
             && [[ -s "$after_modules" ]] \
             && _upgrade_php_modules_preserved "$before_modules" "$after_modules" \
-            && /usr/local/php/sbin/php-fpm -t \
+            && /usr/local/php/sbin/php-fpm -t -y /usr/local/php/etc/php-fpm.conf \
             && systemctl start php-fpm \
             && systemctl is-active --quiet php-fpm; then
+            _upgrade_mark_backup "$backup_root" completed
             log_ok "PHP upgrade deployed. Previous prefix: ${backup_php}; module inventory: ${after_modules}"
             return 0
         fi
@@ -698,11 +1075,13 @@ _upgrade_php() {
     ln -sf /usr/local/php/bin/php-config /usr/bin/php-config
     ln -sf /usr/local/php/bin/pecl /usr/bin/pecl
     ln -sf /usr/local/php/sbin/php-fpm /usr/bin/php-fpm
-    if /usr/local/php/sbin/php-fpm -t >/dev/null 2>&1 \
+    if /usr/local/php/sbin/php-fpm -t -y /usr/local/php/etc/php-fpm.conf >/dev/null 2>&1 \
         && systemctl start php-fpm \
         && systemctl is-active --quiet php-fpm; then
+        _upgrade_mark_backup "$backup_root" rolled-back
         _upgrade_rollback_ok PHP "$backup_php"
     else
+        _upgrade_mark_backup "$backup_root" rollback-failed
         _upgrade_rollback_failed PHP "$backup_php"
     fi
     return 1
@@ -743,7 +1122,7 @@ _upgrade_redis_wait() {
 
 _upgrade_redis() {
     local backup_root backup_bin
-    backup_root=$(_upgrade_backup_root)
+    backup_root=$(_upgrade_backup_root redis)
     backup_bin="${backup_root}/redis-bin"
     cp -a /usr/local/redis/bin "$backup_bin" \
         || die "Cannot back up the current Redis binaries."
@@ -760,6 +1139,7 @@ _upgrade_redis() {
             Redis-systemd-overrides "${backup_root}/redis-systemd-overrides.diff" \
         && systemctl restart redis \
         && _upgrade_redis_wait; then
+        _upgrade_mark_backup "$backup_root" completed
         log_ok "Redis upgrade deployed. Previous binaries: ${backup_bin}"
         return 0
     fi
@@ -768,8 +1148,10 @@ _upgrade_redis() {
     mv "$backup_bin" /usr/local/redis/bin
     _upgrade_restore_version_state "$backup_root"
     if systemctl restart redis && _upgrade_redis_wait; then
+        _upgrade_mark_backup "$backup_root" rolled-back
         _upgrade_rollback_ok Redis "$backup_bin"
     else
+        _upgrade_mark_backup "$backup_root" rollback-failed
         _upgrade_rollback_failed Redis "$backup_bin"
     fi
     return 1
@@ -777,7 +1159,7 @@ _upgrade_redis() {
 
 _upgrade_memcached() {
     local backup_root backup_bin
-    backup_root=$(_upgrade_backup_root)
+    backup_root=$(_upgrade_backup_root memcached)
     backup_bin="${backup_root}/memcached-bin"
     cp -a /usr/local/memcached/bin "$backup_bin" \
         || die "Cannot back up the current Memcached binaries."
@@ -793,6 +1175,7 @@ _upgrade_memcached() {
             "${backup_root}/memcached-systemd-overrides.diff" \
         && systemctl restart memcached \
         && systemctl is-active --quiet memcached; then
+        _upgrade_mark_backup "$backup_root" completed
         log_ok "Memcached upgrade deployed. Previous binaries: ${backup_bin}"
         return 0
     fi
@@ -801,8 +1184,10 @@ _upgrade_memcached() {
     mv "$backup_bin" /usr/local/memcached/bin
     _upgrade_restore_version_state "$backup_root"
     if systemctl restart memcached && systemctl is-active --quiet memcached; then
+        _upgrade_mark_backup "$backup_root" rolled-back
         _upgrade_rollback_ok Memcached "$backup_bin"
     else
+        _upgrade_mark_backup "$backup_root" rollback-failed
         _upgrade_rollback_failed Memcached "$backup_bin"
     fi
     return 1
@@ -842,7 +1227,7 @@ _upgrade_db() {
     [[ -r /root/.my.cnf ]] || die "Database upgrade requires /root/.my.cnf for backup and validation."
 
     local backup_root logical_dump old_backup dump_bin internal_rel=''
-    backup_root=$(_upgrade_backup_root)
+    backup_root=$(_upgrade_backup_root db)
     logical_dump="${backup_root}/all-databases.sql.gz"
     old_backup=$(mktemp -d "${old_prefix}.previous.$(date +%Y%m%d%H%M%S)-XXXXXX") \
         || die "Cannot reserve a database rollback path beside ${old_prefix}."
@@ -897,8 +1282,10 @@ _upgrade_db() {
     if ! mv "$old_prefix" "$old_backup" || ! mv "$extracted" "$old_prefix"; then
         [[ -d "$old_backup" && ! -d "$old_prefix" ]] && mv "$old_backup" "$old_prefix"
         if systemctl start "$service" && systemctl is-active --quiet "$service"; then
+            _upgrade_mark_backup "$backup_root" rolled-back
             _upgrade_rollback_ok "$engine" "$logical_dump"
         else
+            _upgrade_mark_backup "$backup_root" rollback-failed
             _upgrade_rollback_failed "$engine" "$logical_dump"
         fi
         rm -rf "$stage"
@@ -949,6 +1336,7 @@ _upgrade_db() {
     if [[ $failed -eq 0 ]]; then
         record_installed_version "${engine^^}" "$version"
         rm -rf "$stage"
+        _upgrade_mark_backup "$backup_root" completed
         log_ok "${engine} ${version} deployed. Logical dump: ${logical_dump}; previous binaries: ${old_backup}"
         return 0
     fi
@@ -970,8 +1358,10 @@ _upgrade_db() {
     _install_database_client_links "$engine" "$old_prefix" || true
     ldconfig || true
     if systemctl start "$service" && _upgrade_db_wait "$admin_bin"; then
+        _upgrade_mark_backup "$backup_root" rolled-back
         _upgrade_rollback_ok "$engine" "$logical_dump"
     else
+        _upgrade_mark_backup "$backup_root" rollback-failed
         _upgrade_rollback_failed "$engine" "$logical_dump"
     fi
     rm -rf "$stage"
@@ -980,7 +1370,11 @@ _upgrade_db() {
 
 _upgrade_extension() {
     local ext="$1" backup_root ini_file so_file
-    backup_root=$(_upgrade_backup_root)
+    PHP_INI_ROOT=$(_upgrade_php_config_root) \
+        || die "Cannot determine active PHP configuration root."
+    PHP_INI_SCAN_DIR=$(_upgrade_php_scan_dir) \
+        || die "Cannot determine active PHP scan directory."
+    backup_root=$(_upgrade_backup_root "ext:${ext}")
     _init_php_ext_dir
     ini_file="${PHP_INI_SCAN_DIR}/${ext}.ini"
     so_file="${PHP_EXT_DIR}/${ext}.so"
@@ -991,9 +1385,10 @@ _upgrade_extension() {
     if ( install_extension "$ext" y ) \
         && _upgrade_assert_config_unchanged "${backup_root}/${ext}.ini" "$ini_file" \
             "PHP extension ${ext}" "${backup_root}/${ext}-config.diff" \
-        && /usr/local/php/sbin/php-fpm -t \
+        && /usr/local/php/sbin/php-fpm -t -y /usr/local/php/etc/php-fpm.conf \
         && systemctl restart php-fpm \
         && systemctl is-active --quiet php-fpm; then
+        _upgrade_mark_backup "$backup_root" completed
         log_ok "PHP extension ${ext} upgrade deployed. Previous module: ${backup_root}/${ext}.so"
         return 0
     fi
@@ -1010,11 +1405,13 @@ _upgrade_extension() {
     fi
     _upgrade_restore_version_state "$backup_root"
     if /usr/local/php/bin/php -r "exit(extension_loaded('${ext}') ? 0 : 1);" \
-        && /usr/local/php/sbin/php-fpm -t >/dev/null 2>&1 \
+        && /usr/local/php/sbin/php-fpm -t -y /usr/local/php/etc/php-fpm.conf >/dev/null 2>&1 \
         && systemctl restart php-fpm \
         && systemctl is-active --quiet php-fpm; then
+        _upgrade_mark_backup "$backup_root" rolled-back
         _upgrade_rollback_ok "PHP extension ${ext}" "$backup_root"
     else
+        _upgrade_mark_backup "$backup_root" rollback-failed
         _upgrade_rollback_failed "PHP extension ${ext}" "$backup_root"
     fi
     return 1
@@ -1022,21 +1419,29 @@ _upgrade_extension() {
 
 _upgrade_single_file_tool() {
     local tool="$1" path="$2" backup_root
-    backup_root=$(_upgrade_backup_root)
+    backup_root=$(_upgrade_backup_root "$tool")
     cp -a "$path" "${backup_root}/tool" || die "Cannot back up ${tool}."
     _upgrade_save_version_state "$backup_root"
 
     if [[ "$tool" = composer ]]; then
-        ( _install_composer y ) && return 0
+        if ( _install_composer y ); then
+            _upgrade_mark_backup "$backup_root" completed
+            return 0
+        fi
     else
-        ( install_wp_cli y ) && return 0
+        if ( install_wp_cli y ); then
+            _upgrade_mark_backup "$backup_root" completed
+            return 0
+        fi
     fi
     log_err "${tool} upgrade failed; restoring previous executable."
     cp -a "${backup_root}/tool" "$path"
     _upgrade_restore_version_state "$backup_root"
     if [[ -x "$path" ]]; then
+        _upgrade_mark_backup "$backup_root" rolled-back
         _upgrade_rollback_ok "$tool" "${backup_root}/tool"
     else
+        _upgrade_mark_backup "$backup_root" rollback-failed
         _upgrade_rollback_failed "$tool" "${backup_root}/tool"
     fi
     return 1
@@ -1050,24 +1455,34 @@ _upgrade_remove_phpmyadmin() {
         return 0
     }
 
-    backup_root=$(_upgrade_backup_root)
+    backup_root=$(_upgrade_backup_root phpmyadmin)
     cp -a "$dest" "${backup_root}/phpmyadmin" \
         || die "Cannot back up legacy phpMyAdmin before removal."
     _upgrade_save_version_state "$backup_root"
-    rm -rf "$dest" || {
-        log_err "Cannot remove legacy phpMyAdmin; backup retained at ${backup_root}/phpmyadmin."
+    if ! rm -rf "$dest"; then
+        log_err "Cannot remove legacy phpMyAdmin; restoring its protected backup."
+        rm -rf "$dest"
+        if cp -a "${backup_root}/phpmyadmin" "$dest"; then
+            _upgrade_mark_backup "$backup_root" rolled-back
+            _upgrade_rollback_ok phpMyAdmin "${backup_root}/phpmyadmin"
+        else
+            _upgrade_mark_backup "$backup_root" rollback-failed
+            _upgrade_rollback_failed phpMyAdmin "${backup_root}/phpmyadmin"
+        fi
         return 1
-    }
+    fi
     remove_installed_version PHPMYADMIN
+    _upgrade_mark_backup "$backup_root" completed
     log_ok "Removed vulnerable phpMyAdmin deployment. Protected backup: ${backup_root}/phpmyadmin"
 }
 
 _upgrade_acme() {
     local backup_root
-    backup_root=$(_upgrade_backup_root)
+    backup_root=$(_upgrade_backup_root acme)
     cp -a /usr/local/acme.sh "${backup_root}/acme.sh" || die "Cannot back up acme.sh."
     _upgrade_save_version_state "$backup_root"
     if bash "${cur_dir}/tools/ssl.sh" client-upgrade; then
+        _upgrade_mark_backup "$backup_root" completed
         return 0
     fi
     log_err "acme.sh upgrade failed; restoring previous client and account data."
@@ -1075,8 +1490,10 @@ _upgrade_acme() {
     mv "${backup_root}/acme.sh" /usr/local/acme.sh
     _upgrade_restore_version_state "$backup_root"
     if [[ -x /usr/local/acme.sh/acme.sh ]]; then
+        _upgrade_mark_backup "$backup_root" rolled-back
         _upgrade_rollback_ok acme.sh "${backup_root}/acme.sh"
     else
+        _upgrade_mark_backup "$backup_root" rollback-failed
         _upgrade_rollback_failed acme.sh "${backup_root}/acme.sh"
     fi
     return 1
@@ -1105,6 +1522,16 @@ _upgrade_known_component() {
         [[ "$requested" = "$component" ]] && return 0
     done
     return 1
+}
+
+_upgrade_exit_cleanup() {
+    local rc=$?
+    trap - EXIT
+    if [[ "${LNMP_UPGRADE_CLEAN_SOURCES:-y}" = y ]]; then
+        _upgrade_cleanup_source_cache n \
+            || log_err "Automatic source-cache cleanup failed; run: lnmp --yes upgrade cleanup"
+    fi
+    exit "$rc"
 }
 
 upgrade_apply() {
@@ -1149,19 +1576,18 @@ upgrade_apply() {
     fi
 
     check_root
-    command -v flock >/dev/null 2>&1 \
-        || die_code "$EX_UNAVAILABLE" "flock is required to serialize upgrades."
-    local lock_file="${LNMP_UPGRADE_LOCK_FILE:-/run/lock/lnmp-upgrade.lock}"
-    mkdir -p "$(dirname "$lock_file")"
-    exec 9>"$lock_file"
-    flock -n 9 || die "Another LNMP upgrade is already running."
+    _upgrade_acquire_lock
     _upgrade_init_log
     _upgrade_require_commands "${selected[@]}"
+    _upgrade_preflight_components "${selected[@]}"
     _upgrade_load_build_libraries
     for component in "${selected[@]}"; do
         [[ "$component" = nginx ]] && _upgrade_validate_nginx_modules
         [[ "$component" = php ]] && _upgrade_validate_php_extensions
     done
+    if [[ "${LNMP_UPGRADE_CLEAN_SOURCES:-y}" = y ]]; then
+        trap _upgrade_exit_cleanup EXIT
+    fi
     for component in "${selected[@]}"; do
         status=$(_upgrade_component_status "$component")
         case "$status" in
@@ -1183,6 +1609,11 @@ upgrade_apply() {
             || die "Upgrade failed for ${component}; rollback was attempted. Inspect: ${LOG_FILE}"
     done
 
+    if [[ "${LNMP_UPGRADE_CLEAN_SOURCES:-y}" = y ]]; then
+        _upgrade_cleanup_source_cache n
+        trap - EXIT
+    fi
+    _upgrade_prune_backups n
     log_ok "Selected upgrades completed."
     upgrade_plan
 }

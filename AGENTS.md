@@ -57,6 +57,7 @@ lnmp ssl install --help
 lnmp db --help
 lnmp db add --help
 lnmp upgrade --help
+lnmp upgrade inspect
 lnmp upgrade plan
 ```
 
@@ -293,8 +294,15 @@ and secret files MUST pass the allowlists and ownership/mode checks above.
 
 ## 7. Upgrade safety contract
 
-`lnmp upgrade plan` is read-only and does not require root. `apply` requires
-root and accepts these component names:
+`lnmp upgrade plan` and `lnmp upgrade inspect` are read-only and do not require
+root. `inspect` verifies systemd process ownership, native configuration tests,
+effective PHP config/scan paths, extensions, capacity, and the version plan.
+For an installation created by an older repository revision, run
+`lnmp --yes upgrade adopt` only after inspect passes. Adoption records actual
+runtime versions and a protected manifest; it MUST NOT rewrite active runtime
+or application files.
+
+`apply` requires root and accepts these component names:
 
 ```text
 nginx php db redis memcached composer wp-cli acme
@@ -310,14 +318,26 @@ transitions are marked `REVIEW`; automation must name those components
 explicitly after application compatibility has been assessed. A selected
 `AHEAD` component is rejected rather than downgraded.
 
-Every apply run creates a root-only log under `/var/log/lnmp/`. Core rollback
-copies remain under `/var/backups/lnmp/`, and rollback service health is
-reported as completed or failed. The legacy `phpmyadmin` target creates a
-root-only backup and removes the web-served copy; the current upstream release
-has no complete security fix. For database changes, preserve both the logical
-dump and previous binary prefix until application checks pass. Binary rollback
-is best-effort after database metadata migration; the logical dump is the
-authoritative recovery path.
+Every apply run MUST pass the pre-mutation service-ownership, native-config,
+PHP config-root/scan-dir, extension, and capacity gates. At least 5 GiB MUST
+be free on every filesystem holding the repository build cache, `/usr/local`
+staging area, or protected backup directory. Each run creates a root-only log
+under `/var/log/lnmp/`. Core rollback copies remain under `/var/backups/lnmp/`,
+carry an explicit lifecycle status, and rollback service health is reported as
+completed or failed. The legacy `phpmyadmin` target
+creates a root-only backup and removes the web-served copy; the current
+upstream release has no complete security fix. For database changes, preserve
+both the logical dump and previous binary prefix until application checks
+pass. Binary rollback is best-effort after database metadata migration; the
+logical dump remains the authoritative recovery path.
+
+Source archives and extracted build trees under `src/` are transient and MUST
+be removed after every apply, including failures. `lnmp upgrade cleanup
+--dry-run` previews cleanup; `cleanup` removes transient cache and only expired
+backups marked `completed`, retaining at least the newest three. It MUST NOT
+remove pending, rolled-back, rollback-failed, symlinked, or unclassified legacy
+backups. Required rollback evidence remains root-only until its observation
+window expires; it is not temporary residue.
 
 ## 8. Configuration-preserving upgrade and agent collaboration contract
 
@@ -335,14 +355,17 @@ upgrade.
 | Fresh-install template | files under `conf/` and `systemd/` | Generate defaults only for a fresh install. An upgrade may use them for comparison, but must not overwrite operator tuning. |
 | Binary-owned sample/default | `*.default` emitted by upstream `make install` | Not active configuration. Do not mistake a changed sample for a successful migration. |
 
-The PHP upgrader preserves the active PHP/FPM configuration and extension INI
-files, writes before/after module inventories, rebuilds every installed
-extension supported by `lib/extensions.sh`, and fails plus rolls back if a
-previously loaded module disappears. An unknown dynamic extension blocks the
-upgrade before binaries change; an agent must add pinned source, checksum,
-dependencies, build options, and tests to the extension registry rather than
-discarding it. The managed security overlay is the only allowed automatic PHP
-configuration change.
+The PHP upgrader builds and installs into a same-filesystem candidate prefix
+without stopping the active service, seeds that candidate from the active
+configuration, verifies its exact target version, and only then stops PHP-FPM
+for the prefix swap. It preserves the active PHP/FPM configuration and
+extension INI files, writes before/after module inventories, rebuilds every
+installed extension supported by `lib/extensions.sh`, and fails plus rolls
+back if a previously loaded module disappears. An unknown dynamic extension
+blocks the upgrade before binaries change; an agent must add pinned source,
+checksum, dependencies, build options, and tests to the extension registry
+rather than discarding it. The managed security overlay is the only allowed
+automatic PHP configuration change.
 
 For the repository's single managed `[www]` pool, fresh installs MUST keep CLI
 `disable_functions` empty for WP-CLI/Composer, set `enable_dl=Off`, and apply
@@ -364,11 +387,13 @@ activation, and retain protected diff evidence with the rollback backup.
 
 An AI agent changing versions or running an upgrade MUST:
 
-1. **Inventory reality before editing.** Run `lnmp upgrade plan`; record OS and
-   architecture, runtime versions, active service units, install/data paths,
-   Nginx `-V`, PHP `--ini`/`-m`/`php-config --configure-options`, configured
-   PHP extension directives, database engine/data directory, and Redis
-   endpoint. Never infer these from repository defaults.
+1. **Inventory reality before editing.** Run `lnmp upgrade inspect` and
+   `lnmp upgrade plan`; record OS and architecture, runtime versions, active
+   service units and process ownership, install/data paths, Nginx `-V`, PHP
+   `--ini`/`-m`/`php-config --configure-options`, configured PHP extension
+   directives, database engine/data directory, and Redis endpoint. Never infer
+   these from repository defaults. Older project installations MUST be adopted
+   only after inspect passes.
 2. **Align against primary information.** Check the upstream lifecycle page,
    release notes, migration guide, and security advisories for every changed
    release series. Update `versions.conf` with an immutable HTTPS artifact and
@@ -392,9 +417,12 @@ An AI agent changing versions or running an upgrade MUST:
    check readiness, exercise HTTP/database/cache paths, and run an
    application-specific smoke for every hosted workload affected by a
    release-series change.
-8. **Fail safely.** On an unexplained difference, missing capability, failed
-   migration, or failed smoke, stop and roll back. Report the exact backup,
-   config diff, and run log. Do not suppress the error or weaken validation.
+8. **Fail safely and clean deliberately.** On an unexplained difference,
+   missing capability, failed migration, or failed smoke, stop and roll back.
+   Report the exact backup, config diff, and run log. Do not suppress the error
+   or weaken validation. Remove transient downloads/build trees after every
+   phase; preserve protected rollback evidence until its retention gate passes,
+   then prune it with the documented cleanup command.
 9. **Release only proved behavior.** Run syntax and warning-clean ShellCheck,
    behavior tests, the supported Ubuntu matrix, and a real changed-path smoke.
    Update README/CHANGELOG, then commit, tag, push, publish, and confirm CI.

@@ -165,13 +165,17 @@ check_root() {
 }
 
 # Download an HTTPS source artifact and require a pinned SHA-256 digest.
-# Usage: download_src "Name" "URL" "sha256"
+# Usage: download_src "Name" "URL" "sha256" ["accept/media-type"]
 download_src() {
-    local name="$1" url="$2" sha256="${3:-}"
+    local name="$1" url="$2" sha256="${3:-}" accept="${4:-}"
     local filename dest partial
+    local -a wget_args=(--https-only --progress=dot:giga --prefer-family=IPv4 -T 120 -t 1)
 
     [[ "$url" == https://* ]] || die "Refusing non-HTTPS source for ${name}: ${url}"
     [[ "$sha256" =~ ^[0-9a-fA-F]{64}$ ]] || die "Missing or invalid SHA-256 for ${name}"
+    [[ -z "$accept" || "$accept" =~ ^[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+$ ]] \
+        || die "Invalid HTTP Accept media type for ${name}"
+    [[ -z "$accept" ]] || wget_args+=( "--header=Accept: ${accept}" )
 
     filename="$(basename "${url%%\?*}")"
     dest="${cur_dir}/src/${filename}"
@@ -188,11 +192,10 @@ download_src() {
     fi
 
     log_info "Downloading ${name} from ${url} ..."
-    local i
-    for i in 1 2 3; do
+    local i delay attempts=4
+    for ((i = 1; i <= attempts; i++)); do
         rm -f "$partial"
-        if wget --https-only --progress=dot:giga --prefer-family=IPv4 \
-            -T 120 -t 1 -O "$partial" "$url" 2>&1 | tee -a "$LOG_FILE"; then
+        if wget "${wget_args[@]}" -O "$partial" "$url" 2>&1 | tee -a "$LOG_FILE"; then
             if verify_sha256 "$partial" "$sha256"; then
                 mv "$partial" "$dest"
                 log_ok "${name} downloaded and verified."
@@ -200,8 +203,11 @@ download_src() {
             fi
             log_err "Checksum mismatch: ${name}"
         fi
-        log_warn "Retry ${i}/3 for ${name}..."
-        sleep 2
+        if (( i < attempts )); then
+            delay=$((i * i * 5))
+            log_warn "Download attempt ${i}/${attempts} failed for ${name}; retrying in ${delay}s."
+            sleep "$delay"
+        fi
     done
 
     rm -f "$partial"

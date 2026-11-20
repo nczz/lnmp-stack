@@ -82,6 +82,48 @@ assert_eq 124 "$rc" 'Composer timeout exit code'
 [[ "$(cat "${TEST_TMP}/composer-timeout-error")" = *'timed out after 10 seconds'* ]] \
     || fail 'Composer timeout must provide an actionable diagnostic'
 unset COMPOSER_PROBE_ARGS_FILE
+DOWNLOAD_ROOT="${TEST_TMP}/download-retry"
+mkdir -p "$DOWNLOAD_ROOT"
+printf '0\n' > "${DOWNLOAD_ROOT}/attempts"
+: > "${DOWNLOAD_ROOT}/delays"
+: > "${DOWNLOAD_ROOT}/headers"
+(
+    cur_dir="$DOWNLOAD_ROOT"
+    LOG_FILE="${DOWNLOAD_ROOT}/download.log"
+    wget() {
+        local output='' count
+        while [[ $# -gt 0 ]]; do
+            case "$1" in
+                -O)
+                    output="$2"
+                    shift 2
+                    ;;
+                --header=*)
+                    [[ -s "${DOWNLOAD_ROOT}/headers" ]] \
+                        || printf '%s\n' "${1#--header=}" > "${DOWNLOAD_ROOT}/headers"
+                    shift
+                    ;;
+                *) shift ;;
+            esac
+        done
+        count=$(<"${DOWNLOAD_ROOT}/attempts")
+        ((count += 1))
+        printf '%s\n' "$count" > "${DOWNLOAD_ROOT}/attempts"
+        (( count >= 3 )) || return 1
+        printf 'verified\n' > "$output"
+    }
+    sleep() { printf '%s\n' "$1" >> "${DOWNLOAD_ROOT}/delays"; }
+    verify_sha256() { [[ -f "$1" && "$(<"$1")" = verified ]]; }
+    download_src Retry https://example.invalid/retry-artifact.tgz \
+        aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        application/vnd.github.patch >/dev/null
+)
+assert_eq 3 "$(<"${DOWNLOAD_ROOT}/attempts")" 'bounded download retries'
+assert_eq $'5\n20' "$(<"${DOWNLOAD_ROOT}/delays")" 'download retry backoff'
+assert_eq verified "$(<"${DOWNLOAD_ROOT}/src/retry-artifact.tgz")" \
+    'verified retry artifact activation'
+assert_eq 'Accept: application/vnd.github.patch' \
+    "$(<"${DOWNLOAD_ROOT}/headers")" 'download Accept media type'
 
 PHP_CONFIG_DEST_DIR="${TEST_TMP}/rendered-php"
 PHP_CONFIG_PHP_BIN="${TEST_TMP}/missing-php"
@@ -153,6 +195,14 @@ rc=$?
 set -e
 assert_eq 64 "$rc" 'unmanaged PHP extension refusal'
 rm -f "${PHP_UPGRADE_CONFIG_ROOT}/php.d/xdebug.ini"
+
+LEGACY_SCAN="${PHP_UPGRADE_CONFIG_ROOT}/legacy-conf.d"
+mkdir -p "$LEGACY_SCAN"
+printf 'extension=imagick.so\n' > "${LEGACY_SCAN}/008-imagick.ini"
+PHP_UPGRADE_SCAN_DIR="$LEGACY_SCAN"
+assert_eq imagick "$(_upgrade_php_dynamic_extensions)" \
+    'runtime-discovered PHP scan directory inventory'
+unset PHP_UPGRADE_SCAN_DIR
 
 PHP_CONFIG_SNAPSHOT="${TEST_TMP}/php-config-snapshot"
 PHP_CONFIG_LIVE="${TEST_TMP}/php-config-live"
@@ -227,6 +277,137 @@ _upgrade_requires_explicit_review redis 7.2.7 8.10.3 \
     || fail 'PHP patch upgrade must remain automatable'
 ! _upgrade_requires_explicit_review redis 8.10.1 8.10.3 \
     || fail 'Redis patch upgrade must remain automatable'
+
+_upgrade_php_layout_supported /usr/local/php/etc /usr/local/php/etc/php.d \
+    || fail 'project-managed PHP layout must be upgradeable'
+if _upgrade_php_layout_supported /opt/php/etc /opt/php/etc/conf.d >/dev/null 2>&1; then
+    fail 'nonstandard PHP config roots must require an explicit migration'
+fi
+
+PHP_LIVE_PREFIX="${TEST_TMP}/php-live"
+PHP_CANDIDATE="${TEST_TMP}/php-candidate"
+mkdir -p "$PHP_LIVE_PREFIX" "$PHP_CANDIDATE"
+printf 'old\n' > "${PHP_LIVE_PREFIX}/version"
+printf 'new\n' > "${PHP_CANDIDATE}/version"
+PHP_SERVICE_ACTIONS=''
+systemctl() {
+    PHP_SERVICE_ACTIONS+="${PHP_SERVICE_ACTIONS:+,}$1"
+    return 0
+}
+_deploy_php_candidate "$PHP_CANDIDATE" "$PHP_LIVE_PREFIX" php-fpm \
+    || fail 'PHP candidate prefix deployment must succeed'
+assert_eq new "$(cat "${PHP_LIVE_PREFIX}/version")" 'atomic PHP candidate activation'
+assert_eq stop "$PHP_SERVICE_ACTIONS" 'PHP candidate deployment service stop'
+[[ ! -e "$PHP_CANDIDATE" ]] || fail 'activated PHP candidate path must be consumed'
+unset -f systemctl
+
+PHP_CANDIDATE="${TEST_TMP}/php-candidate-stop-failure"
+mkdir -p "$PHP_CANDIDATE"
+printf 'blocked\n' > "${PHP_CANDIDATE}/version"
+systemctl() { return 1; }
+if _deploy_php_candidate "$PHP_CANDIDATE" "$PHP_LIVE_PREFIX" php-fpm; then
+    fail 'PHP candidate deployment must stop when the service cannot stop'
+fi
+assert_eq new "$(cat "${PHP_LIVE_PREFIX}/version")" \
+    'failed PHP candidate deployment preserves live prefix'
+assert_eq blocked "$(cat "${PHP_CANDIDATE}/version")" \
+    'failed PHP candidate deployment preserves candidate'
+unset -f systemctl
+
+PROC_ROOT="${TEST_TMP}/proc"
+EXPECTED_SERVICE_BIN="${TEST_TMP}/expected-nginx"
+mkdir -p "${PROC_ROOT}/1234"
+touch "$EXPECTED_SERVICE_BIN"
+EXPECTED_SERVICE_BIN="$(readlink -f "$EXPECTED_SERVICE_BIN")"
+ln -s "$EXPECTED_SERVICE_BIN" "${PROC_ROOT}/1234/exe"
+LNMP_UPGRADE_PROC_ROOT="$PROC_ROOT"
+systemctl() {
+    case "$1" in
+        is-active) printf 'active\n' ;;
+        show) printf '1234\n' ;;
+        *) return 1 ;;
+    esac
+}
+_upgrade_service_owned nginx "$EXPECTED_SERVICE_BIN" \
+    || fail 'systemd-owned expected service binary must pass preflight'
+EXPECTED_SERVICE_LINK="${TEST_TMP}/expected-nginx-link"
+ln -s "$EXPECTED_SERVICE_BIN" "$EXPECTED_SERVICE_LINK"
+_upgrade_service_owned nginx "$EXPECTED_SERVICE_LINK" \
+    || fail 'symlinked expected service binary must resolve to the owned executable'
+readlink() {
+    if [[ "${1:-}" = -f && "${2:-}" = "${PROC_ROOT}/1234/exe" ]]; then
+        printf '%s (deleted)\n' "$EXPECTED_SERVICE_BIN"
+    else
+        command readlink "$@"
+    fi
+}
+if _upgrade_service_owned nginx "$EXPECTED_SERVICE_BIN" >/dev/null 2>&1; then
+    fail 'deleted running service executable must fail preflight'
+fi
+unset -f readlink
+rm -f "${PROC_ROOT}/1234/exe"
+ln -s "${TEST_TMP}/unexpected-nginx" "${PROC_ROOT}/1234/exe"
+if _upgrade_service_owned nginx "$EXPECTED_SERVICE_BIN" >/dev/null 2>&1; then
+    fail 'unexpected systemd service binary must fail preflight'
+fi
+unset -f systemctl
+unset LNMP_UPGRADE_PROC_ROOT
+
+LNMP_UPGRADE_FREE_KB=5242880
+_upgrade_validate_capacity
+set +e
+(LNMP_UPGRADE_FREE_KB=1048576; _upgrade_validate_capacity) >/dev/null 2>&1
+rc=$?
+set -e
+assert_eq 69 "$rc" 'insufficient upgrade capacity exit code'
+unset LNMP_UPGRADE_FREE_KB
+
+LNMP_SOURCE_CACHE_ROOT="${TEST_TMP}/source-cache"
+mkdir -p "$LNMP_SOURCE_CACHE_ROOT"
+printf 'temporary\n' > "${LNMP_SOURCE_CACHE_ROOT}/artifact"
+_upgrade_cleanup_source_cache y >/dev/null
+[[ -f "${LNMP_SOURCE_CACHE_ROOT}/artifact" ]] \
+    || fail 'source-cache dry-run must not remove artifacts'
+_upgrade_cleanup_source_cache n >/dev/null
+[[ ! -e "$LNMP_SOURCE_CACHE_ROOT" ]] \
+    || fail 'source-cache cleanup must remove transient artifacts'
+mkdir -p "${LNMP_SOURCE_CACHE_ROOT}/custom-module"
+Nginx_Modules_Options="--add-module=${LNMP_SOURCE_CACHE_ROOT}/custom-module"
+_upgrade_cleanup_source_cache n >/dev/null
+[[ -d "$LNMP_SOURCE_CACHE_ROOT" ]] \
+    || fail 'source cache referenced by a configured Nginx module must be preserved'
+rm -rf "$LNMP_SOURCE_CACHE_ROOT"
+Nginx_Modules_Options=''
+unset LNMP_SOURCE_CACHE_ROOT
+
+LNMP_UPGRADE_BACKUP_DIR="${TEST_TMP}/backups"
+LNMP_UPGRADE_BACKUP_DAYS=0
+LNMP_UPGRADE_BACKUP_RETAIN=3
+mkdir -p "$LNMP_UPGRADE_BACKUP_DIR"
+BACKUP_ROOT=$(_upgrade_backup_root nginx)
+assert_eq pending "$(cat "${BACKUP_ROOT}/status")" 'new rollback backup lifecycle'
+assert_eq 700 "$(_upgrade_file_metadata "$BACKUP_ROOT" | cut -d: -f1)" \
+    'rollback backup directory mode'
+assert_eq 600 "$(_upgrade_file_metadata "${BACKUP_ROOT}/status" | cut -d: -f1)" \
+    'rollback backup status mode'
+_upgrade_mark_backup "$BACKUP_ROOT" completed
+for i in 1 2 3 4 5; do
+    mkdir "${LNMP_UPGRADE_BACKUP_DIR}/2020010100000${i}-nginx-test"
+    printf 'completed\n' > "${LNMP_UPGRADE_BACKUP_DIR}/2020010100000${i}-nginx-test/status"
+    touch -t 202001010000 "${LNMP_UPGRADE_BACKUP_DIR}/2020010100000${i}-nginx-test"
+done
+mkdir "${LNMP_UPGRADE_BACKUP_DIR}/20200101000006-nginx-pending"
+printf 'pending\n' > "${LNMP_UPGRADE_BACKUP_DIR}/20200101000006-nginx-pending/status"
+touch -t 202001010000 "${LNMP_UPGRADE_BACKUP_DIR}/20200101000006-nginx-pending"
+_upgrade_prune_backups y >/dev/null
+assert_eq 6 "$(find "$LNMP_UPGRADE_BACKUP_DIR" -name status -exec grep -l '^completed$' {} \; | wc -l | tr -d ' ')" \
+    'backup cleanup dry-run'
+_upgrade_prune_backups n >/dev/null
+assert_eq 3 "$(find "$LNMP_UPGRADE_BACKUP_DIR" -name status -exec grep -l '^completed$' {} \; | wc -l | tr -d ' ')" \
+    'minimum completed rollback retention'
+[[ -f "${LNMP_UPGRADE_BACKUP_DIR}/20200101000006-nginx-pending/status" ]] \
+    || fail 'pending rollback backup must never be pruned'
+unset LNMP_UPGRADE_BACKUP_DIR LNMP_UPGRADE_BACKUP_DAYS LNMP_UPGRADE_BACKUP_RETAIN
 
 cat > "${TEST_TMP}/redis-cli" <<'EOF'
 #!/usr/bin/env bash
@@ -316,6 +497,9 @@ _upgrade_init_log() { LOG_FILE="${TEST_TMP}/apply.log"; : > "$LOG_FILE"; }
 _upgrade_require_commands() { return 0; }
 _upgrade_load_build_libraries() { LOADED_TARGET="$INSTALL_TARGET"; }
 upgrade_plan() { return 0; }
+_upgrade_preflight_components() { return 0; }
+_upgrade_prune_backups() { return 0; }
+LNMP_UPGRADE_CLEAN_SOURCES=n
 flock() { return 0; }
 LNMP_UPGRADE_LOCK_FILE="${TEST_TMP}/upgrade.lock"
 APPLIED=()
@@ -349,5 +533,17 @@ TEST_STATUS[php]=REVIEW
 APPLIED=()
 upgrade_apply outdated >/dev/null
 assert_eq '' "${APPLIED[*]}" 'outdated does not implicitly approve REVIEW'
+
+source "${REPO_DIR}/conf/bash_completion_lnmp"
+COMP_WORDS=(lnmp upgrade '')
+COMP_CWORD=2
+_lnmp_completion
+[[ " ${COMPREPLY[*]} " = *' inspect '* && " ${COMPREPLY[*]} " = *' adopt '* \
+    && " ${COMPREPLY[*]} " = *' cleanup '* ]] \
+    || fail 'upgrade completion must expose inspect, adopt, and cleanup'
+COMP_WORDS=(lnmp upgrade cleanup --)
+COMP_CWORD=3
+_lnmp_completion
+assert_eq '--dry-run' "${COMPREPLY[*]}" 'cleanup option completion'
 
 printf 'upgrade_test: PASS\n'
