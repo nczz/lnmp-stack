@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file.
 
-## v1.7.16 — 2026-11-20
+## v1.7.16 — 2026-11-21
 
 ### Low-Memory PHP Upgrade Reliability
 
