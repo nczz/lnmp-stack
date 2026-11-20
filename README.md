@@ -322,9 +322,11 @@ database defaults, applicable systemd units, PHP `php.ini`, `php-fpm.conf`,
 pool files, and extension INI tuning are copied into the protected rollback
 area and compared before the upgraded service is accepted. PHP additionally
 records before/after module inventories and a root-only `php-config.diff`.
-Every previously loaded module must remain available. The only automatically
-updated PHP configuration is the project-managed
-`php.d/99-lnmp-security.ini` security overlay.
+Every previously loaded module must remain available. Automatic PHP
+configuration changes are limited to the project-managed
+`php.d/99-lnmp-security.ini` overlay and an `extension_dir` value that exactly
+matches the previous compiled PHP ABI directory; the latter is migrated to the
+new compiled directory before extensions are rebuilt.
 
 Before a PHP build, dynamic extension directives are inventoried. Extensions
 registered in `lib/extensions.sh` are rebuilt against the new PHP API without

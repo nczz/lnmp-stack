@@ -253,7 +253,7 @@ _upgrade_php_config_summary() {
         [[ -n "$ext" ]] || continue
         _upgrade_php_extension_managed "$ext" || unknown+="${unknown:+,}${ext}"
     done < <(_upgrade_php_dynamic_extensions)
-    printf 'PHP configuration: preserve php.ini, php-fpm.conf, pool files and active scan-dir INIs; update only project security overlays.\n'
+    printf 'PHP configuration: preserve php.ini, php-fpm.conf, pools and active scan-dir INIs; update only project security overlays and exact compiled-ABI extension_dir migrations.\n'
     printf 'PHP config root: %s; scan directory: %s\n' "${root:-unknown}" "${scan:-unknown}"
     printf 'PHP dynamic extensions: %s\n' "${extensions:-none}"
     [[ -z "$unknown" ]] \
@@ -921,6 +921,93 @@ _upgrade_php_managed_ini_addition() {
     [[ "$(cat "$file")" = "extension=${ext}.so" ]]
 }
 
+
+_upgrade_rewrite_php_extension_dir_file() {
+    local file="$1" old_dir="$2" new_dir="$3"
+    local tmp line stripped key rhs value comment changed=0
+    [[ -f "$file" ]] || return 0
+
+    tmp=$(mktemp "${file}.lnmp.XXXXXX") || return 1
+    cp -p -- "$file" "$tmp" || {
+        rm -f "$tmp"
+        return 1
+    }
+    : > "$tmp"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        stripped="${line#"${line%%[![:space:]]*}"}"
+        if [[ -n "$stripped" && "$stripped" != \;* && "$stripped" != \#* && "$stripped" = *=* ]]; then
+            key="${stripped%%=*}"
+            key="${key%"${key##*[![:space:]]}"}"
+            if [[ "$key" = extension_dir ]]; then
+                rhs="${stripped#*=}"
+                comment=''
+                if [[ "$rhs" = *';'* ]]; then
+                    comment="${rhs#*;}"
+                    rhs="${rhs%%;*}"
+                fi
+                value="${rhs#"${rhs%%[![:space:]]*}"}"
+                value="${value%"${value##*[![:space:]]}"}"
+                value="${value#\"}"; value="${value%\"}"
+                value="${value#\'}"; value="${value%\'}"
+                if [[ "$value" = "$old_dir" ]]; then
+                    printf '%s= "%s"' "${line%%=*}" "$new_dir" >> "$tmp"
+                    [[ -z "$comment" ]] || printf ' ;%s' "$comment" >> "$tmp"
+                    printf '\n' >> "$tmp"
+                    changed=1
+                    continue
+                fi
+            fi
+        fi
+        printf '%s\n' "$line" >> "$tmp"
+    done < "$file"
+
+    if [[ $changed -eq 0 ]]; then
+        rm -f "$tmp"
+        return 0
+    fi
+    mv -f -- "$tmp" "$file"
+}
+
+_upgrade_migrate_php_extension_dir() {
+    local root="$1" scan="$2" old_dir="$3" new_dir="$4" file
+    local -a files=()
+    [[ -n "$old_dir" && -n "$new_dir" && "$old_dir" != "$new_dir" ]] || return 0
+    [[ -f "${root}/php.ini" ]] && files+=("${root}/php.ini")
+    shopt -s nullglob
+    files+=("${scan}/"*.ini)
+    shopt -u nullglob
+    for file in "${files[@]}"; do
+        [[ ! -L "$file" ]] || {
+            log_err "Cannot migrate extension_dir in symlinked PHP configuration: ${file}"
+            return 1
+        }
+        _upgrade_rewrite_php_extension_dir_file "$file" "$old_dir" "$new_dir" \
+            || return 1
+    done
+}
+
+_upgrade_php_config_file_preserved() {
+    local old="$1" current="$2" tmp rc=1
+    [[ -f "$old" && -f "$current" ]] || return 1
+    [[ "$(_upgrade_file_metadata "$old")" = "$(_upgrade_file_metadata "$current")" ]] \
+        || return 1
+    cmp -s "$old" "$current" && return 0
+    [[ -n "${PHP_UPGRADE_OLD_EXT_DIR:-}" && -n "${PHP_UPGRADE_NEW_EXT_DIR:-}" ]] \
+        || return 1
+
+    tmp=$(mktemp "${TMPDIR:-/tmp}/lnmp-php-config.XXXXXX") || return 1
+    cp -p -- "$old" "$tmp" || {
+        rm -f "$tmp"
+        return 1
+    }
+    if _upgrade_rewrite_php_extension_dir_file "$tmp" \
+            "$PHP_UPGRADE_OLD_EXT_DIR" "$PHP_UPGRADE_NEW_EXT_DIR" \
+        && cmp -s "$tmp" "$current"; then
+        rc=0
+    fi
+    rm -f "$tmp"
+    return "$rc"
+}
 _upgrade_php_configs_preserved() {
     local snapshot="$1" live="$2" old rel current pattern changed=0
     local -a roots=(php.d php-fpm.d)
@@ -929,8 +1016,7 @@ _upgrade_php_configs_preserved() {
         old="${snapshot}/${rel}"
         current="${live}/${rel}"
         [[ -e "$old" || -e "$current" ]] || continue
-        if [[ ! -f "$old" || ! -f "$current" ]] || ! cmp -s "$old" "$current" \
-            || [[ "$(_upgrade_file_metadata "$old")" != "$(_upgrade_file_metadata "$current")" ]]; then
+        if ! _upgrade_php_config_file_preserved "$old" "$current"; then
             log_err "PHP operator configuration was not preserved: ${current}"
             changed=1
         fi
@@ -946,8 +1032,7 @@ _upgrade_php_configs_preserved() {
             while IFS= read -r -d '' old; do
                 current="${live}/${old#"${snapshot}/"}"
                 [[ "$current" = "${live}/php.d/99-lnmp-security.ini" ]] && continue
-                if [[ ! -f "$current" ]] || ! cmp -s "$old" "$current" \
-                    || [[ "$(_upgrade_file_metadata "$old")" != "$(_upgrade_file_metadata "$current")" ]]; then
+                if ! _upgrade_php_config_file_preserved "$old" "$current"; then
                     log_err "PHP operator configuration was not preserved: ${current}"
                     changed=1
                 fi
@@ -1147,6 +1232,7 @@ _upgrade_nginx() {
 
 _upgrade_php() {
     local backup_root backup_php ext before_modules after_modules
+    local old_extension_dir new_extension_dir
     local -a installed_extensions=()
     PHP_INI_ROOT=$(_upgrade_php_config_root) \
         || die "Cannot determine active PHP configuration root."
@@ -1164,6 +1250,10 @@ _upgrade_php() {
     _upgrade_php_modules > "$before_modules" \
         || die "Cannot inventory PHP modules before upgrade."
     chmod 0600 "$before_modules"
+    old_extension_dir=$(/usr/local/php/bin/php -n -r 'echo ini_get("extension_dir");' 2>/dev/null) \
+        || die "Cannot determine the current compiled PHP extension directory."
+    [[ -n "$old_extension_dir" ]] \
+        || die "Current compiled PHP extension directory is empty."
 
     for ext in redis imagick apcu swoole memcached imap; do
         [[ -n "$(_upgrade_runtime_version "ext:${ext}")" ]] && installed_extensions+=("$ext")
@@ -1171,10 +1261,21 @@ _upgrade_php() {
 
     if (
         install_php upgrade
+        new_extension_dir=$(/usr/local/php/bin/php -n -r 'echo ini_get("extension_dir");' 2>/dev/null) \
+            || die "Cannot determine the target compiled PHP extension directory."
+        [[ -n "$new_extension_dir" ]] \
+            || die "Target compiled PHP extension directory is empty."
+        _upgrade_migrate_php_extension_dir "$PHP_INI_ROOT" "$PHP_INI_SCAN_DIR" \
+            "$old_extension_dir" "$new_extension_dir" \
+            || die "Cannot migrate the PHP extension_dir directive for the target ABI."
         for ext in "${installed_extensions[@]}"; do
             PHP_EXT_DIR='' install_extension "$ext" y
         done
     ); then
+        new_extension_dir=$(/usr/local/php/bin/php -n -r 'echo ini_get("extension_dir");' 2>/dev/null) \
+            || new_extension_dir=''
+        PHP_UPGRADE_OLD_EXT_DIR="$old_extension_dir"
+        PHP_UPGRADE_NEW_EXT_DIR="$new_extension_dir"
         _upgrade_php_modules > "$after_modules" \
             || log_err "Cannot inventory PHP modules after upgrade."
         chmod 0600 "$after_modules" 2>/dev/null || true
@@ -1192,11 +1293,13 @@ _upgrade_php() {
             && /usr/local/php/sbin/php-fpm -t -y /usr/local/php/etc/php-fpm.conf \
             && systemctl start php-fpm \
             && systemctl is-active --quiet php-fpm; then
+            unset PHP_UPGRADE_OLD_EXT_DIR PHP_UPGRADE_NEW_EXT_DIR
             _upgrade_mark_backup "$backup_root" completed
             log_ok "PHP upgrade deployed. Previous prefix: ${backup_php}; module inventory: ${after_modules}"
             return 0
         fi
     fi
+    unset PHP_UPGRADE_OLD_EXT_DIR PHP_UPGRADE_NEW_EXT_DIR
 
     log_err "PHP upgrade failed; restoring previous prefix."
     systemctl stop php-fpm 2>/dev/null || true

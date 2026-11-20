@@ -170,13 +170,16 @@ install_extension() {
     # Enable
     _enable_php_extension_ini "$ext"
 
-    # Verify (avoid grep -q which triggers SIGPIPE under pipefail).
-    if $PHP_BIN -m 2>/dev/null | grep -i "^${ext}$" >/dev/null; then
+    # Verify and preserve the actual loader diagnostic for unattended upgrades.
+    local module_output module_rc=0
+    module_output=$($PHP_BIN -m 2>&1) || module_rc=$?
+    if grep -i "^${ext}$" <<< "$module_output" >/dev/null; then
         local state_key="PHP_EXT_${ext^^}"
         record_installed_version "$state_key" "$version"
         log_ok "Extension '${ext}' ${version} installed and loaded."
     else
-        die "Extension '${ext}' installed but failed to load. Check: php -m"
+        log_err "Extension '${ext}' module probe failed (exit ${module_rc}). Output: ${module_output:-<empty>}"
+        die "Extension '${ext}' installed but failed to load."
     fi
 }
 

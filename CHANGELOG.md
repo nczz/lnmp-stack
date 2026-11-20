@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.17 — 2026-11-21
+
+### PHP ABI Configuration Migration
+
+- Migrate an operator-configured `extension_dir` only when it exactly matches the previous PHP compiled ABI directory, preserving all other `php.ini` and extension tuning while allowing rebuilt modules to load after a PHP release-series upgrade.
+- Capture the real `php -m` loader output in protected upgrade logs when an extension validation fails, replacing the previous post-rollback-only diagnostic.
+
 ## v1.7.16 — 2026-11-21
 
 ### Low-Memory PHP Upgrade Reliability

@@ -184,6 +184,7 @@ unset PHP_CONFIG_DEST_DIR PHP_CONFIG_PHP_BIN
 PHP_UPGRADE_CONFIG_ROOT="${TEST_TMP}/php-config"
 mkdir -p "${PHP_UPGRADE_CONFIG_ROOT}/php.d"
 cat > "${PHP_UPGRADE_CONFIG_ROOT}/php.ini" <<'EOF'
+extension_dir = "/usr/local/php/lib/php/extensions/no-debug-non-zts-20230831" ; compiled ABI
 memory_limit=768M
 EOF
 cat > "${PHP_UPGRADE_CONFIG_ROOT}/php.d/opcache.ini" <<'EOF'
@@ -232,6 +233,14 @@ if _upgrade_assert_config_unchanged "${TEST_TMP}/config.before" "${TEST_TMP}/con
         Test "${TEST_TMP}/config-metadata.diff" >/dev/null 2>&1; then
     fail 'changed configuration metadata must fail preservation'
 fi
+PHP_UPGRADE_OLD_EXT_DIR=/usr/local/php/lib/php/extensions/no-debug-non-zts-20230831
+PHP_UPGRADE_NEW_EXT_DIR=/usr/local/php/lib/php/extensions/no-debug-non-zts-20240924
+_upgrade_migrate_php_extension_dir "$PHP_CONFIG_LIVE" "${PHP_CONFIG_LIVE}/php.d" \
+    "$PHP_UPGRADE_OLD_EXT_DIR" "$PHP_UPGRADE_NEW_EXT_DIR"
+assert_eq \
+    'extension_dir = "/usr/local/php/lib/php/extensions/no-debug-non-zts-20240924" ; compiled ABI' \
+    "$(grep '^extension_dir' "${PHP_CONFIG_LIVE}/php.ini")" \
+    'PHP extension ABI directory migration'
 printf 'new security baseline\n' > "${PHP_CONFIG_LIVE}/php.d/99-lnmp-security.ini"
 _upgrade_php_configs_preserved "$PHP_CONFIG_SNAPSHOT" "$PHP_CONFIG_LIVE" \
     || fail 'operator PHP configuration and extension tuning must be preserved'
@@ -247,6 +256,7 @@ printf 'memory_limit=256M\n' > "${PHP_CONFIG_LIVE}/php.ini"
 if _upgrade_php_configs_preserved "$PHP_CONFIG_SNAPSHOT" "$PHP_CONFIG_LIVE" >/dev/null 2>&1; then
     fail 'changed php.ini must fail configuration preservation'
 fi
+unset PHP_UPGRADE_OLD_EXT_DIR PHP_UPGRADE_NEW_EXT_DIR
 
 PHP_INI_SCAN_DIR="${TEST_TMP}/extension-ini"
 mkdir -p "$PHP_INI_SCAN_DIR"
