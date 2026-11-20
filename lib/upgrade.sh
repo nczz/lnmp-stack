@@ -449,8 +449,9 @@ _upgrade_validate_capacity() {
 }
 
 _upgrade_php_layout_supported() {
-    local config_root="${1:-$(_upgrade_php_config_root || true)}"
-    local scan="${2:-$(_upgrade_php_scan_dir || true)}"
+    local config_root scan
+    config_root=$(_upgrade_php_config_root || true)
+    scan=$(_upgrade_php_scan_dir || true)
     [[ "$config_root" = /usr/local/php/etc ]] || {
         log_err "PHP configuration root '${config_root:-unknown}' requires an explicit migration to /usr/local/php/etc."
         return 1

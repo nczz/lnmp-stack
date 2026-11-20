@@ -278,9 +278,16 @@ _upgrade_requires_explicit_review redis 7.2.7 8.10.3 \
 ! _upgrade_requires_explicit_review redis 8.10.1 8.10.3 \
     || fail 'Redis patch upgrade must remain automatable'
 
-_upgrade_php_layout_supported /usr/local/php/etc /usr/local/php/etc/php.d \
-    || fail 'project-managed PHP layout must be upgradeable'
-if _upgrade_php_layout_supported /opt/php/etc /opt/php/etc/conf.d >/dev/null 2>&1; then
+(
+    _upgrade_php_config_root() { printf '/usr/local/php/etc'; }
+    _upgrade_php_scan_dir() { printf '/usr/local/php/etc/php.d'; }
+    _upgrade_php_layout_supported
+) || fail 'project-managed PHP layout must be upgradeable'
+if (
+    _upgrade_php_config_root() { printf '/opt/php/etc'; }
+    _upgrade_php_scan_dir() { printf '/opt/php/etc/conf.d'; }
+    _upgrade_php_layout_supported
+) >/dev/null 2>&1; then
     fail 'nonstandard PHP config roots must require an explicit migration'
 fi
 
@@ -498,8 +505,8 @@ _upgrade_require_commands() { return 0; }
 _upgrade_load_build_libraries() { LOADED_TARGET="$INSTALL_TARGET"; }
 upgrade_plan() { return 0; }
 _upgrade_preflight_components() { return 0; }
-_upgrade_prune_backups() { return 0; }
 LNMP_UPGRADE_CLEAN_SOURCES=n
+LNMP_UPGRADE_BACKUP_DIR="${TEST_TMP}/apply-backups"
 flock() { return 0; }
 LNMP_UPGRADE_LOCK_FILE="${TEST_TMP}/upgrade.lock"
 APPLIED=()
