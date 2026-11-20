@@ -169,7 +169,7 @@ check_root() {
 download_src() {
     local name="$1" url="$2" sha256="${3:-}" accept="${4:-}"
     local filename dest partial
-    local -a wget_args=(--https-only --progress=dot:giga --prefer-family=IPv4 -T 120 -t 1)
+    local -a wget_args=(--https-only --continue --progress=dot:giga --prefer-family=IPv4 -T 120 -t 1)
 
     [[ "$url" == https://* ]] || die "Refusing non-HTTPS source for ${name}: ${url}"
     [[ "$sha256" =~ ^[0-9a-fA-F]{64}$ ]] || die "Missing or invalid SHA-256 for ${name}"
@@ -194,7 +194,6 @@ download_src() {
     log_info "Downloading ${name} from ${url} ..."
     local i delay attempts=4
     for ((i = 1; i <= attempts; i++)); do
-        rm -f "$partial"
         if wget "${wget_args[@]}" -O "$partial" "$url" 2>&1 | tee -a "$LOG_FILE"; then
             if verify_sha256 "$partial" "$sha256"; then
                 mv "$partial" "$dest"
@@ -202,6 +201,7 @@ download_src() {
                 return 0
             fi
             log_err "Checksum mismatch: ${name}"
+            rm -f "$partial"
         fi
         if (( i < attempts )); then
             delay=$((i * i * 5))

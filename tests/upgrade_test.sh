@@ -87,16 +87,21 @@ mkdir -p "$DOWNLOAD_ROOT"
 printf '0\n' > "${DOWNLOAD_ROOT}/attempts"
 : > "${DOWNLOAD_ROOT}/delays"
 : > "${DOWNLOAD_ROOT}/headers"
+: > "${DOWNLOAD_ROOT}/resumed"
 (
     cur_dir="$DOWNLOAD_ROOT"
     LOG_FILE="${DOWNLOAD_ROOT}/download.log"
     wget() {
-        local output='' count
+        local output='' count continue=n
         while [[ $# -gt 0 ]]; do
             case "$1" in
                 -O)
                     output="$2"
                     shift 2
+                    ;;
+                --continue)
+                    continue=y
+                    shift
                     ;;
                 --header=*)
                     [[ -s "${DOWNLOAD_ROOT}/headers" ]] \
@@ -106,10 +111,15 @@ printf '0\n' > "${DOWNLOAD_ROOT}/attempts"
                 *) shift ;;
             esac
         done
+        [[ "$continue" = y ]] || return 2
         count=$(<"${DOWNLOAD_ROOT}/attempts")
+        [[ ! -s "$output" ]] || printf 'resumed\n' >> "${DOWNLOAD_ROOT}/resumed"
         ((count += 1))
         printf '%s\n' "$count" > "${DOWNLOAD_ROOT}/attempts"
-        (( count >= 3 )) || return 1
+        if (( count < 3 )); then
+            printf 'partial-%s\n' "$count" >> "$output"
+            return 1
+        fi
         printf 'verified\n' > "$output"
     }
     sleep() { printf '%s\n' "$1" >> "${DOWNLOAD_ROOT}/delays"; }
@@ -122,6 +132,8 @@ assert_eq 3 "$(<"${DOWNLOAD_ROOT}/attempts")" 'bounded download retries'
 assert_eq $'5\n20' "$(<"${DOWNLOAD_ROOT}/delays")" 'download retry backoff'
 assert_eq verified "$(<"${DOWNLOAD_ROOT}/src/retry-artifact.tgz")" \
     'verified retry artifact activation'
+assert_eq $'resumed\nresumed' "$(<"${DOWNLOAD_ROOT}/resumed")" \
+    'interrupted downloads resume their partial artifact'
 assert_eq 'Accept: application/vnd.github.patch' \
     "$(<"${DOWNLOAD_ROOT}/headers")" 'download Accept media type'
 

@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.15 — 2026-11-20
+
+### Resumable Source Downloads
+
+- Resume pinned source downloads within bounded retries so large MariaDB and other archives recover from transient TLS termination without discarding partial bytes; activation still requires the pinned SHA-256 digest.
+
 ## v1.7.14 — 2026-11-20
 
 ### Legacy Adoption and Complete OpenSSL Security Baseline

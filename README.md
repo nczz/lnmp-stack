@@ -297,11 +297,13 @@ succeeds; PHP-FPM is not stopped during core PHP compilation. Each run writes
 a root-only log under `/var/log/lnmp/`. Core rollback copies are stored under
 `/var/backups/lnmp/`, carry an explicit completion or rollback status, and
 rollback service health is checked and reported. A process lock serializes
-adoption, deployment, and cleanup mutations. Verified downloads and extracted
-build trees under `src/` are transient and removed after every apply, including
-failed runs. Legacy phpMyAdmin directories are marked `OUTDATED`; applying that
-item creates a protected backup and removes the web-served copy because no
-fixed upstream release is available.
+adoption, deployment, and cleanup mutations. Interrupted source downloads
+resume within bounded retries and are accepted only after the pinned SHA-256
+matches. Verified downloads and extracted build trees under `src/` are
+transient and removed after every apply, including failed runs. Legacy
+phpMyAdmin directories are marked `OUTDATED`; applying that item creates a
+protected backup and removes the web-served copy because no fixed upstream
+release is available.
 
 `cleanup` always removes the transient source/build cache unless a configured
 Nginx custom-module path still references it. Completed rollback directories
