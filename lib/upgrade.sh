@@ -297,7 +297,7 @@ _upgrade_require_commands() {
                 required+=(make gcc patch perl pkg-config)
                 ;;
             php)
-                required+=(make gcc g++ pkg-config)
+                required+=(make gcc g++ pkg-config mkswap swapon swapoff)
                 ;;
             redis)
                 required+=(make gcc)
@@ -446,6 +446,136 @@ _upgrade_validate_capacity() {
         (( available >= minimum )) || die_code "$EX_UNAVAILABLE" \
             "Upgrade requires at least $((minimum / 1024 / 1024)) GiB free on the filesystem containing ${path}; only $((available / 1024 / 1024)) GiB is available. No binaries were changed."
     done
+}
+
+_upgrade_build_memory_mb() {
+    local meminfo="${LNMP_UPGRADE_MEMINFO_FILE:-/proc/meminfo}"
+    if [[ -n "${LNMP_UPGRADE_BUILD_MEMORY_MB:-}" ]]; then
+        [[ "$LNMP_UPGRADE_BUILD_MEMORY_MB" =~ ^[0-9]+$ ]] || return 1
+        printf '%s' "$LNMP_UPGRADE_BUILD_MEMORY_MB"
+        return 0
+    fi
+    awk '/^(MemTotal|SwapTotal):/ { total += $2 } END {
+        if (total > 0) print int(total / 1024)
+    }' "$meminfo" 2>/dev/null
+}
+
+_upgrade_build_swap_path() {
+    printf '%s' "${LNMP_UPGRADE_BUILD_SWAP_FILE:-${LNMP_STATE_DIR}/upgrade-build.swap}"
+}
+
+_upgrade_build_swap_active() {
+    local path="$1" swaps="${LNMP_UPGRADE_ACTIVE_SWAPS_FILE:-/proc/swaps}"
+    [[ -r "$swaps" ]] || return 1
+    awk -v wanted="$path" '$1 == wanted { found=1 } END { exit !found }' "$swaps"
+}
+
+_upgrade_required_build_swap_mb() {
+    local minimum="${LNMP_UPGRADE_BUILD_MEMORY_MIN_MB:-4096}" total
+    [[ "$minimum" =~ ^[0-9]+$ ]] || return 1
+    total=$(_upgrade_build_memory_mb) || return 1
+    [[ "$total" =~ ^[0-9]+$ ]] || return 1
+    if (( total >= minimum )); then
+        printf '0'
+    else
+        printf '%s' "$((minimum - total))"
+    fi
+}
+
+_upgrade_cleanup_build_swap() {
+    local dry_run="${1:-n}" path="${2:-${_UPGRADE_BUILD_SWAP_FILE:-}}"
+    [[ "$dry_run" = n || "$dry_run" = y ]] || return 1
+    [[ -n "$path" ]] || return 0
+    [[ "$path" = /* && "$path" != / && "$path" != *[[:space:]]* ]] || {
+        log_err "Unsafe temporary build-swap path: ${path}"
+        return 1
+    }
+    if [[ "$dry_run" = y ]]; then
+        if [[ -e "$path" ]] || _upgrade_build_swap_active "$path"; then
+            printf 'Would deactivate and remove temporary build swap: %s\n' "$path"
+        fi
+        return 0
+    fi
+    if _upgrade_build_swap_active "$path"; then
+        swapoff "$path" || {
+            log_err "Cannot deactivate temporary build swap; preserving active file: ${path}"
+            return 1
+        }
+    fi
+    if [[ -e "$path" ]]; then
+        [[ ! -L "$path" ]] || {
+            log_err "Refusing symlinked temporary build-swap path: ${path}"
+            return 1
+        }
+        rm -f -- "$path" || {
+            log_err "Cannot remove temporary build swap: ${path}"
+            return 1
+        }
+        log_ok "Removed temporary build swap: ${path}"
+    fi
+    _UPGRADE_BUILD_SWAP_FILE=''
+}
+
+_upgrade_prepare_build_swap() {
+    local component needs_php=n minimum total needed path default_path available
+    for component in "$@"; do
+        [[ "$component" = php ]] && needs_php=y
+    done
+    [[ "$needs_php" = y ]] || return 0
+
+    minimum="${LNMP_UPGRADE_BUILD_MEMORY_MIN_MB:-4096}"
+    needed=$(_upgrade_required_build_swap_mb) \
+        || die_code "$EX_UNAVAILABLE" "Cannot determine RAM plus swap available for the PHP build."
+    total=$(_upgrade_build_memory_mb) \
+        || die_code "$EX_UNAVAILABLE" "Cannot determine RAM plus swap available for the PHP build."
+    [[ "$minimum" =~ ^[0-9]+$ && "$total" =~ ^[0-9]+$ && "$needed" =~ ^[0-9]+$ ]] \
+        || die_code "$EX_UNAVAILABLE" "Invalid PHP build-memory requirement."
+    path=$(_upgrade_build_swap_path)
+    default_path="${LNMP_STATE_DIR}/upgrade-build.swap"
+    [[ "$path" = /* && "$path" != / && "$path" != *[[:space:]]* ]] \
+        || die_code "$EX_UNAVAILABLE" "Unsafe temporary build-swap path: ${path}"
+    [[ ! -L "$path" ]] \
+        || die_code "$EX_UNAVAILABLE" "Refusing symlinked temporary build-swap path: ${path}"
+
+    if [[ -e "$path" ]] && ! _upgrade_build_swap_active "$path"; then
+        [[ "$path" = "$default_path" ]] \
+            || die_code "$EX_UNAVAILABLE" "Custom temporary build-swap path already exists: ${path}"
+        rm -f -- "$path" \
+            || die_code "$EX_UNAVAILABLE" "Cannot remove stale temporary build swap: ${path}"
+    fi
+    if _upgrade_build_swap_active "$path"; then
+        _UPGRADE_BUILD_SWAP_FILE="$path"
+        if (( needed == 0 )); then
+            log_info "Reusing active temporary build swap: ${path}"
+            return 0
+        fi
+        die_code "$EX_UNAVAILABLE" "Active temporary build swap does not provide the required ${minimum} MiB total build memory: ${path}"
+    fi
+    (( needed > 0 )) || return 0
+    available=$(_upgrade_available_kb "$(dirname "$path")")
+    [[ "$available" =~ ^[0-9]+$ ]] \
+        || die_code "$EX_UNAVAILABLE" "Cannot determine free space for temporary PHP build swap."
+    (( available >= (needed + 1024) * 1024 )) \
+        || die_code "$EX_UNAVAILABLE" "PHP build requires ${needed} MiB temporary swap plus 1 GiB free at $(dirname "$path"); no binaries were changed."
+
+    mkdir -p "$(dirname "$path")" \
+        || die_code "$EX_UNAVAILABLE" "Cannot create temporary build-swap directory."
+    _UPGRADE_BUILD_SWAP_FILE="$path"
+    if command -v fallocate >/dev/null 2>&1 \
+        && fallocate -l "${needed}M" "$path"; then
+        :
+    else
+        rm -f -- "$path"
+        dd if=/dev/zero of="$path" bs=1M count="$needed" status=none \
+            || die_code "$EX_UNAVAILABLE" "Cannot allocate ${needed} MiB temporary PHP build swap."
+    fi
+    chmod 0600 "$path" \
+        || die_code "$EX_UNAVAILABLE" "Cannot protect temporary PHP build swap."
+    mkswap "$path" >> "$LOG_FILE" 2>&1 \
+        || die_code "$EX_UNAVAILABLE" "Cannot initialize temporary PHP build swap."
+    swapon "$path" \
+        || die_code "$EX_UNAVAILABLE" "Cannot activate temporary PHP build swap."
+    log_ok "Activated ${needed} MiB temporary PHP build swap; it will be removed after this run."
 }
 
 _upgrade_php_layout_supported() {
@@ -673,11 +803,13 @@ _upgrade_prune_backups() {
 }
 
 upgrade_cleanup() {
-    local dry_run="${1:-n}"
+    local dry_run="${1:-n}" swap_path
     check_root
     _upgrade_acquire_lock
     _upgrade_init_log
+    swap_path=$(_upgrade_build_swap_path)
     _upgrade_cleanup_source_cache "$dry_run"
+    _upgrade_cleanup_build_swap "$dry_run" "$swap_path"
     _upgrade_prune_backups "$dry_run"
 }
 
@@ -1532,6 +1664,10 @@ _upgrade_exit_cleanup() {
         _upgrade_cleanup_source_cache n \
             || log_err "Automatic source-cache cleanup failed; run: lnmp --yes upgrade cleanup"
     fi
+    if [[ -n "${_UPGRADE_BUILD_SWAP_FILE:-}" ]]; then
+        _upgrade_cleanup_build_swap n "$_UPGRADE_BUILD_SWAP_FILE" \
+            || log_err "Automatic build-swap cleanup failed; run: lnmp --yes upgrade cleanup"
+    fi
     exit "$rc"
 }
 
@@ -1586,9 +1722,8 @@ upgrade_apply() {
         [[ "$component" = nginx ]] && _upgrade_validate_nginx_modules
         [[ "$component" = php ]] && _upgrade_validate_php_extensions
     done
-    if [[ "${LNMP_UPGRADE_CLEAN_SOURCES:-y}" = y ]]; then
-        trap _upgrade_exit_cleanup EXIT
-    fi
+    trap _upgrade_exit_cleanup EXIT
+    _upgrade_prepare_build_swap "${selected[@]}"
     for component in "${selected[@]}"; do
         status=$(_upgrade_component_status "$component")
         case "$status" in
@@ -1612,8 +1747,12 @@ upgrade_apply() {
 
     if [[ "${LNMP_UPGRADE_CLEAN_SOURCES:-y}" = y ]]; then
         _upgrade_cleanup_source_cache n
-        trap - EXIT
     fi
+    if [[ -n "${_UPGRADE_BUILD_SWAP_FILE:-}" ]]; then
+        _upgrade_cleanup_build_swap n "$_UPGRADE_BUILD_SWAP_FILE" \
+            || die "Temporary PHP build swap cleanup failed; run: lnmp --yes upgrade cleanup"
+    fi
+    trap - EXIT
     _upgrade_prune_backups n
     log_ok "Selected upgrades completed."
     upgrade_plan

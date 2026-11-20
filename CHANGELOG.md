@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.16 — 2026-11-20
+
+### Low-Memory PHP Upgrade Reliability
+
+- Provision a non-persistent, root-only temporary swap file when a PHP source build has less than 4 GiB of combined RAM and swap, then deactivate and remove it on successful, failed, or explicit cleanup paths so constrained legacy hosts avoid compiler OOM rollback without retaining build residue.
+
 ## v1.7.15 — 2026-11-20
 
 ### Resumable Source Downloads

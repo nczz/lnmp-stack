@@ -290,7 +290,10 @@ directory. These checks run before runtime files are changed.
 
 `apply` recompiles source components, rebuilds installed project-supported PHP
 extensions after a PHP upgrade, validates the changed service, and restores the
-previous binary/prefix when validation fails. PHP is installed into a
+previous binary/prefix when validation fails. Before compiling PHP, hosts with
+less than 4 GiB of RAM plus swap receive a root-only temporary swap file sized
+to meet that build-memory floor. It is not added to `fstab`; successful, failed,
+and explicit cleanup paths deactivate and remove it. PHP is installed into a
 same-filesystem candidate prefix seeded from the active configuration, checked
 for the exact target version, and swapped into place only after the core build
 succeeds; PHP-FPM is not stopped during core PHP compilation. Each run writes

@@ -381,6 +381,61 @@ set -e
 assert_eq 69 "$rc" 'insufficient upgrade capacity exit code'
 unset LNMP_UPGRADE_FREE_KB
 
+assert_eq 0 \
+    "$(LNMP_UPGRADE_BUILD_MEMORY_MB=4096 _upgrade_required_build_swap_mb)" \
+    'sufficient PHP build memory needs no temporary swap'
+assert_eq 2596 \
+    "$(LNMP_UPGRADE_BUILD_MEMORY_MB=1500 _upgrade_required_build_swap_mb)" \
+    'low-memory PHP build temporary swap size'
+
+BUILD_SWAP_BIN="${TEST_TMP}/build-swap-bin"
+BUILD_SWAP_FILE="${TEST_TMP}/state/upgrade-build.swap"
+BUILD_SWAP_ACTIVE="${TEST_TMP}/active-swaps"
+BUILD_SWAP_CALLS="${TEST_TMP}/build-swap-calls"
+mkdir -p "$BUILD_SWAP_BIN"
+: > "$BUILD_SWAP_ACTIVE"
+: > "$BUILD_SWAP_CALLS"
+cat > "${BUILD_SWAP_BIN}/fallocate" <<'EOF'
+#!/usr/bin/env bash
+printf 'fallocate %s\n' "$*" >> "$BUILD_SWAP_CALLS"
+: > "${@: -1}"
+EOF
+cat > "${BUILD_SWAP_BIN}/mkswap" <<'EOF'
+#!/usr/bin/env bash
+printf 'mkswap %s\n' "$*" >> "$BUILD_SWAP_CALLS"
+EOF
+cat > "${BUILD_SWAP_BIN}/swapon" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$1" > "$BUILD_SWAP_ACTIVE"
+printf 'swapon %s\n' "$*" >> "$BUILD_SWAP_CALLS"
+EOF
+cat > "${BUILD_SWAP_BIN}/swapoff" <<'EOF'
+#!/usr/bin/env bash
+grep -qx "$1" "$BUILD_SWAP_ACTIVE" || exit 96
+: > "$BUILD_SWAP_ACTIVE"
+printf 'swapoff %s\n' "$*" >> "$BUILD_SWAP_CALLS"
+EOF
+chmod +x "${BUILD_SWAP_BIN}/"{fallocate,mkswap,swapon,swapoff}
+export BUILD_SWAP_ACTIVE BUILD_SWAP_CALLS
+PATH="${BUILD_SWAP_BIN}:${PATH}" \
+LNMP_UPGRADE_BUILD_MEMORY_MB=3500 \
+LNMP_UPGRADE_BUILD_SWAP_FILE="$BUILD_SWAP_FILE" \
+LNMP_UPGRADE_ACTIVE_SWAPS_FILE="$BUILD_SWAP_ACTIVE" \
+LNMP_UPGRADE_FREE_KB=5242880 \
+    _upgrade_prepare_build_swap php
+[[ -f "$BUILD_SWAP_FILE" ]] || fail 'low-memory PHP build must create temporary swap'
+assert_eq 600 "$(_upgrade_file_metadata "$BUILD_SWAP_FILE" | cut -d: -f1)" \
+    'temporary PHP build swap mode'
+grep -q '^swapon ' "$BUILD_SWAP_CALLS" \
+    || fail 'low-memory PHP build must activate temporary swap'
+PATH="${BUILD_SWAP_BIN}:${PATH}" \
+LNMP_UPGRADE_ACTIVE_SWAPS_FILE="$BUILD_SWAP_ACTIVE" \
+    _upgrade_cleanup_build_swap n "$BUILD_SWAP_FILE"
+[[ ! -e "$BUILD_SWAP_FILE" ]] || fail 'temporary PHP build swap must be removed'
+grep -q '^swapoff ' "$BUILD_SWAP_CALLS" \
+    || fail 'temporary PHP build swap must be deactivated before removal'
+unset BUILD_SWAP_ACTIVE BUILD_SWAP_CALLS _UPGRADE_BUILD_SWAP_FILE
+
 LNMP_SOURCE_CACHE_ROOT="${TEST_TMP}/source-cache"
 mkdir -p "$LNMP_SOURCE_CACHE_ROOT"
 printf 'temporary\n' > "${LNMP_SOURCE_CACHE_ROOT}/artifact"
@@ -518,6 +573,7 @@ _upgrade_load_build_libraries() { LOADED_TARGET="$INSTALL_TARGET"; }
 upgrade_plan() { return 0; }
 _upgrade_preflight_components() { return 0; }
 LNMP_UPGRADE_CLEAN_SOURCES=n
+LNMP_UPGRADE_BUILD_MEMORY_MB=4096
 LNMP_UPGRADE_BACKUP_DIR="${TEST_TMP}/apply-backups"
 flock() { return 0; }
 LNMP_UPGRADE_LOCK_FILE="${TEST_TMP}/upgrade.lock"
@@ -552,6 +608,7 @@ TEST_STATUS[php]=REVIEW
 APPLIED=()
 upgrade_apply outdated >/dev/null
 assert_eq '' "${APPLIED[*]}" 'outdated does not implicitly approve REVIEW'
+unset LNMP_UPGRADE_BUILD_MEMORY_MB
 
 source "${REPO_DIR}/conf/bash_completion_lnmp"
 COMP_WORDS=(lnmp upgrade '')
