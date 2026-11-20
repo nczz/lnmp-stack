@@ -181,10 +181,31 @@ assert_eq '' \
 PHP_FPM_DISABLE_FUNCTIONS='exec,passthru,shell_exec,system,popen,proc_open,pcntl_exec,pcntl_fork'
 unset PHP_CONFIG_DEST_DIR PHP_CONFIG_PHP_BIN
 
+PHP_EXTENSION_DIR_PROBE="${TEST_TMP}/php-extension-dir-probe"
+cat > "$PHP_EXTENSION_DIR_PROBE" <<'EOF'
+#!/usr/bin/env bash
+if [[ " $* " = *' -n '* ]]; then
+    printf '/usr/local/php/lib/php/extensions/no-debug-non-zts-20240924'
+else
+    printf '/opt/legacy-php/lib/php/extensions/no-debug-non-zts-20230831'
+fi
+EOF
+chmod 0700 "$PHP_EXTENSION_DIR_PROBE"
+assert_eq '/opt/legacy-php/lib/php/extensions/no-debug-non-zts-20230831' \
+    "$(_upgrade_php_extension_dir "$PHP_EXTENSION_DIR_PROBE" effective)" \
+    'effective extension directory probe'
+assert_eq '/usr/local/php/lib/php/extensions/no-debug-non-zts-20240924' \
+    "$(_upgrade_php_extension_dir "$PHP_EXTENSION_DIR_PROBE" compiled)" \
+    'compiled extension directory probe'
+if _upgrade_php_extension_dir "$PHP_EXTENSION_DIR_PROBE" invalid >/dev/null 2>&1; then
+    fail 'invalid PHP extension directory probe source must fail'
+fi
+
+
 PHP_UPGRADE_CONFIG_ROOT="${TEST_TMP}/php-config"
 mkdir -p "${PHP_UPGRADE_CONFIG_ROOT}/php.d"
 cat > "${PHP_UPGRADE_CONFIG_ROOT}/php.ini" <<'EOF'
-extension_dir = "/usr/local/php/lib/php/extensions/no-debug-non-zts-20230831" ; compiled ABI
+extension_dir = "/opt/legacy-php/lib/php/extensions/no-debug-non-zts-20230831" ; effective ABI
 memory_limit=768M
 EOF
 cat > "${PHP_UPGRADE_CONFIG_ROOT}/php.d/opcache.ini" <<'EOF'
@@ -233,14 +254,14 @@ if _upgrade_assert_config_unchanged "${TEST_TMP}/config.before" "${TEST_TMP}/con
         Test "${TEST_TMP}/config-metadata.diff" >/dev/null 2>&1; then
     fail 'changed configuration metadata must fail preservation'
 fi
-PHP_UPGRADE_OLD_EXT_DIR=/usr/local/php/lib/php/extensions/no-debug-non-zts-20230831
+PHP_UPGRADE_OLD_EXT_DIR=/opt/legacy-php/lib/php/extensions/no-debug-non-zts-20230831
 PHP_UPGRADE_NEW_EXT_DIR=/usr/local/php/lib/php/extensions/no-debug-non-zts-20240924
 _upgrade_migrate_php_extension_dir "$PHP_CONFIG_LIVE" "${PHP_CONFIG_LIVE}/php.d" \
     "$PHP_UPGRADE_OLD_EXT_DIR" "$PHP_UPGRADE_NEW_EXT_DIR"
 assert_eq \
-    'extension_dir = "/usr/local/php/lib/php/extensions/no-debug-non-zts-20240924" ; compiled ABI' \
+    'extension_dir = "/usr/local/php/lib/php/extensions/no-debug-non-zts-20240924" ; effective ABI' \
     "$(grep '^extension_dir' "${PHP_CONFIG_LIVE}/php.ini")" \
-    'PHP extension ABI directory migration'
+    'PHP extension effective ABI directory migration across installation prefixes'
 printf 'new security baseline\n' > "${PHP_CONFIG_LIVE}/php.d/99-lnmp-security.ini"
 _upgrade_php_configs_preserved "$PHP_CONFIG_SNAPSHOT" "$PHP_CONFIG_LIVE" \
     || fail 'operator PHP configuration and extension tuning must be preserved'

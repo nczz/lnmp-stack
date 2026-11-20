@@ -325,8 +325,9 @@ records before/after module inventories and a root-only `php-config.diff`.
 Every previously loaded module must remain available. Automatic PHP
 configuration changes are limited to the project-managed
 `php.d/99-lnmp-security.ini` overlay and an `extension_dir` value that exactly
-matches the previous compiled PHP ABI directory; the latter is migrated to the
-new compiled directory before extensions are rebuilt.
+matches the previous effective extension directory; the latter is migrated to
+the new compiled ABI directory before extensions are rebuilt. This also covers
+legacy installations whose original compile prefix differs from `/usr/local/php`.
 
 Before a PHP build, dynamic extension directives are inventoried. Extensions
 registered in `lib/extensions.sh` are rebuilt against the new PHP API without

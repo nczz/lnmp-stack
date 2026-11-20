@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.18 — 2026-11-21
+
+### Legacy PHP Prefix Migration
+
+- Derive the old ABI path from PHP's effective `extension_dir`, rather than its compiled default, so upgrades from legacy builds compiled under a different prefix migrate the exact active directive before rebuilding extensions.
+- Verify that the effective post-migration directory equals the new compiled ABI path before any extension rebuild or PHP-FPM activation; otherwise roll back with an explicit diagnostic.
+
 ## v1.7.17 — 2026-11-21
 
 ### PHP ABI Configuration Migration

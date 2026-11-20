@@ -243,6 +243,19 @@ _upgrade_php_scan_dir() {
     printf '%s' "$scan"
 }
 
+_upgrade_php_extension_dir() {
+    local php_bin="$1" source="${2:-effective}"
+    local -a ini_args=()
+    [[ -x "$php_bin" ]] || return 1
+    case "$source" in
+        effective) ;;
+        compiled) ini_args=(-n) ;;
+        *) return 1 ;;
+    esac
+    "$php_bin" "${ini_args[@]}" -r 'echo ini_get("extension_dir");' 2>/dev/null
+}
+
+
 _upgrade_php_config_summary() {
     local extensions unknown='' ext root scan
     [[ -x "${PHP_UPGRADE_BIN:-/usr/local/php/bin/php}" ]] || return 0
@@ -253,7 +266,7 @@ _upgrade_php_config_summary() {
         [[ -n "$ext" ]] || continue
         _upgrade_php_extension_managed "$ext" || unknown+="${unknown:+,}${ext}"
     done < <(_upgrade_php_dynamic_extensions)
-    printf 'PHP configuration: preserve php.ini, php-fpm.conf, pools and active scan-dir INIs; update only project security overlays and exact compiled-ABI extension_dir migrations.\n'
+    printf 'PHP configuration: preserve php.ini, php-fpm.conf, pools and active scan-dir INIs; update only project security overlays and exact effective-ABI extension_dir migrations.\n'
     printf 'PHP config root: %s; scan directory: %s\n' "${root:-unknown}" "${scan:-unknown}"
     printf 'PHP dynamic extensions: %s\n' "${extensions:-none}"
     [[ -z "$unknown" ]] \
@@ -1232,7 +1245,7 @@ _upgrade_nginx() {
 
 _upgrade_php() {
     local backup_root backup_php ext before_modules after_modules
-    local old_extension_dir new_extension_dir
+    local old_extension_dir new_extension_dir effective_extension_dir
     local -a installed_extensions=()
     PHP_INI_ROOT=$(_upgrade_php_config_root) \
         || die "Cannot determine active PHP configuration root."
@@ -1250,10 +1263,10 @@ _upgrade_php() {
     _upgrade_php_modules > "$before_modules" \
         || die "Cannot inventory PHP modules before upgrade."
     chmod 0600 "$before_modules"
-    old_extension_dir=$(/usr/local/php/bin/php -n -r 'echo ini_get("extension_dir");' 2>/dev/null) \
-        || die "Cannot determine the current compiled PHP extension directory."
+    old_extension_dir=$(_upgrade_php_extension_dir /usr/local/php/bin/php effective) \
+        || die "Cannot determine the current effective PHP extension directory."
     [[ -n "$old_extension_dir" ]] \
-        || die "Current compiled PHP extension directory is empty."
+        || die "Current effective PHP extension directory is empty."
 
     for ext in redis imagick apcu swoole memcached imap; do
         [[ -n "$(_upgrade_runtime_version "ext:${ext}")" ]] && installed_extensions+=("$ext")
@@ -1261,18 +1274,22 @@ _upgrade_php() {
 
     if (
         install_php upgrade
-        new_extension_dir=$(/usr/local/php/bin/php -n -r 'echo ini_get("extension_dir");' 2>/dev/null) \
+        new_extension_dir=$(_upgrade_php_extension_dir /usr/local/php/bin/php compiled) \
             || die "Cannot determine the target compiled PHP extension directory."
         [[ -n "$new_extension_dir" ]] \
             || die "Target compiled PHP extension directory is empty."
         _upgrade_migrate_php_extension_dir "$PHP_INI_ROOT" "$PHP_INI_SCAN_DIR" \
             "$old_extension_dir" "$new_extension_dir" \
-            || die "Cannot migrate the PHP extension_dir directive for the target ABI."
+            || die "Cannot migrate the effective PHP extension_dir directive for the target ABI."
+        effective_extension_dir=$(_upgrade_php_extension_dir /usr/local/php/bin/php effective) \
+            || die "Cannot verify the target effective PHP extension directory."
+        [[ "$effective_extension_dir" = "$new_extension_dir" ]] \
+            || die "Effective PHP extension directory did not migrate to the target ABI: ${effective_extension_dir:-empty}."
         for ext in "${installed_extensions[@]}"; do
             PHP_EXT_DIR='' install_extension "$ext" y
         done
     ); then
-        new_extension_dir=$(/usr/local/php/bin/php -n -r 'echo ini_get("extension_dir");' 2>/dev/null) \
+        new_extension_dir=$(_upgrade_php_extension_dir /usr/local/php/bin/php compiled) \
             || new_extension_dir=''
         PHP_UPGRADE_OLD_EXT_DIR="$old_extension_dir"
         PHP_UPGRADE_NEW_EXT_DIR="$new_extension_dir"
