@@ -46,23 +46,23 @@ clear error instead of installing an incompatible binary.
 | Software | Version | Install Method |
 |----------|---------|----------------|
 | Nginx | 1.30.7 | Compile |
-| OpenSSL | 3.5.9 + official 2026-11-10 security patch set | Embedded in Nginx |
+| OpenSSL | 3.5.9 + official security patches through 2026-11-17 | Embedded in Nginx |
 | MariaDB | 11.4.13 LTS | Official binary (default) |
 | MySQL | 8.4.13 LTS | Official binary (not supported on Ubuntu 26.04) |
-| PHP | 8.4.28 | Compile |
+| PHP | 8.4.28 (fresh install) | Compile |
 | Redis | 8.10.3 | Compile (optional) |
 | Memcached | 1.6.45 | Compile (optional) |
 | Composer | 2.11.2 | Verified PHAR |
 | WP-CLI | 2.12.0 | Verified PHAR |
 | acme.sh | 3.1.6 | Verified official tarball |
 
-The Nginx and PHP security baseline was reviewed on **2026-11-20**. Nginx
+The Nginx and PHP security baseline was reviewed on **2026-11-21**. Nginx
 1.30.7 fixes the nine vulnerabilities disclosed on 2026-11-18, including the
-major HTTP/2 flow-control and TLS request-body issues. PHP 8.4.28 is the latest
-release in the project's active-support PHP 8.4 branch and fixes the
-2026-11-19 security advisory set, including PHP-FPM, session, Date, DOM, Phar,
-SOAP, CGI, and stream-wrapper vulnerabilities. Source archives and their
-SHA-256 digests are pinned in `versions.conf`.
+major HTTP/2 flow-control and TLS request-body issues. Fresh installations use
+PHP 8.4.28. Existing PHP 8.2, 8.3, 8.4, and 8.5 installations upgrade to the
+pinned latest patch in their current release series (8.2.36, 8.3.37, 8.4.28,
+and 8.5.13 respectively) rather than crossing a release-series boundary.
+Source archives and their SHA-256 digests are pinned in `versions.conf`.
 
 PHP 8.4.28 contains the complete CVE-2026-115560 fix. LNMP continues to deploy
 `session.upload_progress.enabled=0` as defense in depth. Fresh installs do not
@@ -288,15 +288,18 @@ explicit migration, and less than 5 GiB free on any filesystem holding the
 repository build cache, `/usr/local` staging area, or protected backup
 directory. These checks run before runtime files are changed.
 
-`apply` recompiles source components, rebuilds installed project-supported PHP
-extensions after a PHP upgrade, validates the changed service, and restores the
-previous binary/prefix when validation fails. Before compiling PHP, hosts with
-less than 4 GiB of RAM plus swap receive a root-only temporary swap file sized
-to meet that build-memory floor. It is not added to `fstab`; successful, failed,
-and explicit cleanup paths deactivate and remove it. PHP is installed into a
-same-filesystem candidate prefix seeded from the active configuration, checked
-for the exact target version, and swapped into place only after the core build
-succeeds; PHP-FPM is not stopped during core PHP compilation. Each run writes
+`apply` recompiles source components, validates the changed service, and
+restores the previous binary/prefix when validation fails. PHP patch upgrades
+retain same-ABI extension binaries, including custom loaders, and require the
+exact pre-upgrade module inventory afterward. A reviewed PHP release-series
+transition rebuilds project-supported extensions and rejects unmanaged ones
+before mutation. Before compiling PHP, hosts with less than 4 GiB of RAM plus
+swap receive a root-only temporary swap file sized to meet that build-memory
+floor. It is not added to `fstab`; successful, failed, and explicit cleanup
+paths deactivate and remove it. PHP is installed into a same-filesystem
+candidate prefix seeded from the active configuration, checked for the exact
+target version, and swapped into place only after the core build succeeds;
+PHP-FPM is not stopped during core PHP compilation. Each run writes
 a root-only log under `/var/log/lnmp/`. Core rollback copies are stored under
 `/var/backups/lnmp/`, carry an explicit completion or rollback status, and
 rollback service health is checked and reported. A process lock serializes
@@ -322,18 +325,22 @@ database defaults, applicable systemd units, PHP `php.ini`, `php-fpm.conf`,
 pool files, and extension INI tuning are copied into the protected rollback
 area and compared before the upgraded service is accepted. PHP additionally
 records before/after module inventories and a root-only `php-config.diff`.
-Every previously loaded module must remain available. Automatic PHP
-configuration changes are limited to the project-managed
-`php.d/99-lnmp-security.ini` overlay and an `extension_dir` value that exactly
-matches the previous effective extension directory; the latter is migrated to
-the new compiled ABI directory before extensions are rebuilt. This also covers
-legacy installations whose original compile prefix differs from `/usr/local/php`.
+Every previously loaded module must remain available. A reviewed PHP
+release-series transition may update the project-managed
+`php.d/99-lnmp-security.ini` overlay and migrate an `extension_dir` value that
+exactly matches the previous effective extension directory to the new compiled
+ABI directory. Same-series patch upgrades preserve the active configuration
+byte-for-byte. Both paths cover legacy installations whose original compile,
+configuration, or scan prefix differs from `/usr/local/php`.
 
-Before a PHP build, dynamic extension directives are inventoried. Extensions
-registered in `lib/extensions.sh` are rebuilt against the new PHP API without
-overwriting their existing INI tuning. An unmanaged extension such as a custom
-loader or debugger blocks the PHP upgrade before binaries change; add pinned
-source/build metadata and tests rather than silently dropping the capability.
+Before a PHP build, dynamic extension directives and loaded modules are
+inventoried. Same-series patch upgrades preserve the compatible ABI directory
+and verify the exact module inventory, including unmanaged custom extensions.
+For a release-series transition, extensions registered in `lib/extensions.sh`
+are rebuilt against the new PHP API without overwriting existing INI tuning;
+an unmanaged extension such as a custom loader or debugger blocks the upgrade
+before binaries change. Add pinned source/build metadata and tests rather than
+silently dropping the capability.
 
 Existing virtual hosts, certificates, webroots, and database data directories
 remain in place. Before an Nginx build, the upgrader inspects the current

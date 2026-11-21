@@ -20,27 +20,75 @@ _queue_legacy_imap_extension() {
     esac
 }
 
+_php_fpm_master_pid() {
+    pgrep -o php-fpm 2>/dev/null
+}
+
+_php_fpm_wait_for_exit() {
+    local pid="$1" i
+    for ((i = 0; i < 120; i++)); do
+        kill -0 "$pid" 2>/dev/null || return 0
+        sleep 1
+    done
+    return 1
+}
+
+_start_php_fpm_candidate() {
+    local live_prefix="$1" config="$2" service="$3" i pid actual
+    systemctl reset-failed "$service" 2>/dev/null || true
+    systemctl start "$service" 2>/dev/null || true
+    for ((i = 0; i < 10; i++)); do
+        pid=$(_php_fpm_master_pid || true)
+        actual=$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)
+        [[ "$actual" = "${live_prefix}/sbin/php-fpm" ]] && return 0
+        sleep 1
+    done
+    systemctl stop "$service" 2>/dev/null || true
+    "${live_prefix}/sbin/php-fpm" -y "$config" >/dev/null 2>&1 || return 1
+    for ((i = 0; i < 10; i++)); do
+        pid=$(_php_fpm_master_pid || true)
+        actual=$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)
+        [[ "$actual" = "${live_prefix}/sbin/php-fpm" ]] && return 0
+        sleep 1
+    done
+    return 1
+}
+
 _deploy_php_candidate() {
     local candidate="$1" live_prefix="$2" service="${3:-php-fpm}"
-    local previous
-    [[ -d "$candidate" && -d "$live_prefix" ]] || return 1
+    local config="${4:-${PHP_INI_ROOT:-/usr/local/php/etc}/php-fpm.conf}"
+    local previous old_pid
+    [[ -d "$candidate" && -d "$live_prefix" && -f "$config" ]] || return 1
+    old_pid=$(_php_fpm_master_pid) || return 1
     previous=$(mktemp -d "${live_prefix}.previous.$(date +%Y%m%d%H%M%S)-XXXXXX") \
         || return 1
     rmdir "$previous" || return 1
 
-    if ! systemctl stop "$service"; then
-        return 1
+    systemctl stop "$service" 2>/dev/null || true
+    if kill -0 "$old_pid" 2>/dev/null; then
+        kill -QUIT "$old_pid" || return 1
+        _php_fpm_wait_for_exit "$old_pid" || return 1
     fi
     if ! mv "$live_prefix" "$previous"; then
-        systemctl start "$service" 2>/dev/null || true
+        _start_php_fpm_candidate "$live_prefix" "$config" "$service" 2>/dev/null || true
         return 1
     fi
     if ! mv "$candidate" "$live_prefix"; then
         mv "$previous" "$live_prefix" 2>/dev/null || true
-        systemctl start "$service" 2>/dev/null || true
+        _start_php_fpm_candidate "$live_prefix" "$config" "$service" 2>/dev/null || true
         return 1
     fi
-    rm -rf "$previous" || return 1
+    if ! _start_php_fpm_candidate "$live_prefix" "$config" "$service"; then
+        rm -rf "$live_prefix"
+        mv "$previous" "$live_prefix" 2>/dev/null || true
+        _start_php_fpm_candidate "$live_prefix" "$config" "$service" 2>/dev/null || true
+        return 1
+    fi
+    PHP_DEPLOY_PREVIOUS="$previous"
+    if [[ -n "${PHP_DEPLOY_STATE_FILE:-}" ]]; then
+        printf '%s\n' "$previous" > "$PHP_DEPLOY_STATE_FILE" || return 1
+        chmod 0600 "$PHP_DEPLOY_STATE_FILE" || return 1
+    fi
 }
 
 install_php() {
@@ -51,61 +99,79 @@ install_php() {
     download_src "PHP" "$PHP_URL" "$PHP_SHA256"
     tar_cd "php-${PHP_VER}.tar.xz" "php-${PHP_VER}"
 
-    local php_configure_args=(
-        --prefix=/usr/local/php
-        --with-config-file-path=/usr/local/php/etc
-        --with-config-file-scan-dir=/usr/local/php/etc/php.d
-        --enable-fpm
-        --with-fpm-user=www
-        --with-fpm-group=www
-        --with-fpm-systemd
-        --enable-mysqlnd
-        --with-mysqli=mysqlnd
-        --with-pdo-mysql=mysqlnd
-        --with-iconv
-        --with-freetype
-        --with-jpeg
-        --with-webp
-        --with-avif
-        --with-zlib
-        --with-curl
-        --with-openssl
-        --with-mhash
-        --with-xsl
-        --with-gettext
-        --with-zip
-        --with-gmp
-        --with-readline
-        --enable-xml
-        --enable-bcmath
-        --enable-shmop
-        --enable-sysvsem
-        --enable-mbregex
-        --enable-mbstring
-        --enable-pcntl
-        --enable-sockets
-        --enable-soap
-        --enable-calendar
-        --enable-intl
-        --enable-opcache
-        --enable-gd
-        --disable-debug
-        --disable-rpath
-    )
+    local config_path="${PHP_INI_ROOT:-/usr/local/php/etc}"
+    local scan_path="${PHP_INI_SCAN_DIR:-/usr/local/php/etc/php.d}"
+    local arg
+    local -a php_configure_args=()
+    if [[ "$mode" = upgrade && -n "${PHP_UPGRADE_CONFIGURE_OPTIONS:-}" ]]; then
+        local -a previous_configure_args=()
+        read -r -a previous_configure_args <<< "$PHP_UPGRADE_CONFIGURE_OPTIONS"
+        php_configure_args=(
+            --prefix=/usr/local/php
+            "--with-config-file-path=${config_path}"
+            "--with-config-file-scan-dir=${scan_path}"
+        )
+        for arg in "${previous_configure_args[@]}"; do
+            case "$arg" in
+                --prefix=*|--with-config-file-path=*|--with-config-file-scan-dir=*|PKG_CONFIG_PATH=*) ;;
+                *) php_configure_args+=("$arg") ;;
+            esac
+        done
+    else
+        php_configure_args=(
+            --prefix=/usr/local/php
+            "--with-config-file-path=${config_path}"
+            "--with-config-file-scan-dir=${scan_path}"
+            --enable-fpm
+            --with-fpm-user=www
+            --with-fpm-group=www
+            --with-fpm-systemd
+            --enable-mysqlnd
+            --with-mysqli=mysqlnd
+            --with-pdo-mysql=mysqlnd
+            --with-iconv
+            --with-freetype
+            --with-jpeg
+            --with-webp
+            --with-avif
+            --with-zlib
+            --with-curl
+            --with-openssl
+            --with-mhash
+            --with-xsl
+            --with-gettext
+            --with-zip
+            --with-gmp
+            --with-readline
+            --enable-xml
+            --enable-bcmath
+            --enable-shmop
+            --enable-sysvsem
+            --enable-mbregex
+            --enable-mbstring
+            --enable-pcntl
+            --enable-sockets
+            --enable-soap
+            --enable-calendar
+            --enable-intl
+            --enable-opcache
+            --enable-gd
+            --disable-debug
+            --disable-rpath
+        )
 
-    # Optional extensions from lnmp.conf
-    [[ "${Enable_PHP_Fileinfo:-n}" = 'y' ]] && php_configure_args+=( --enable-fileinfo ) || php_configure_args+=( --disable-fileinfo )
-    [[ "${Enable_PHP_Exif:-n}" = 'y' ]] && php_configure_args+=( --enable-exif )
-    [[ "${Enable_PHP_Ldap:-n}" = 'y' ]] && php_configure_args+=( --with-ldap --with-ldap-sasl )
-    [[ "${Enable_PHP_Bz2:-n}" = 'y' ]] && php_configure_args+=( --with-bz2 )
-    [[ "${Enable_PHP_Sodium:-n}" = 'y' ]] && php_configure_args+=( --with-sodium )
-    _queue_legacy_imap_extension
+        [[ "${Enable_PHP_Fileinfo:-n}" = y ]] && php_configure_args+=( --enable-fileinfo ) || php_configure_args+=( --disable-fileinfo )
+        [[ "${Enable_PHP_Exif:-n}" = y ]] && php_configure_args+=( --enable-exif )
+        [[ "${Enable_PHP_Ldap:-n}" = y ]] && php_configure_args+=( --with-ldap --with-ldap-sasl )
+        [[ "${Enable_PHP_Bz2:-n}" = y ]] && php_configure_args+=( --with-bz2 )
+        [[ "${Enable_PHP_Sodium:-n}" = y ]] && php_configure_args+=( --with-sodium )
+        _queue_legacy_imap_extension
 
-    # User-defined extra options
-    if [[ -n "${PHP_Modules_Options}" ]]; then
-        local -a php_extra_args=()
-        read -r -a php_extra_args <<< "${PHP_Modules_Options}"
-        php_configure_args+=( "${php_extra_args[@]}" )
+        if [[ -n "${PHP_Modules_Options}" ]]; then
+            local -a php_extra_args=()
+            read -r -a php_extra_args <<< "${PHP_Modules_Options}"
+            php_configure_args+=( "${php_extra_args[@]}" )
+        fi
     fi
 
     # Prioritize system pkg-config paths to avoid /usr/local contamination
@@ -132,7 +198,11 @@ install_php() {
         candidate_version=$("${candidate}/bin/php" -n -r 'echo PHP_VERSION;' 2>/dev/null || true)
         [[ "$candidate_version" = "$PHP_VER" ]] \
             || { rm -rf "$stage"; die "PHP candidate version mismatch: ${candidate_version:-unknown}."; }
-        if ! _deploy_php_candidate "$candidate" /usr/local/php; then
+        "${candidate}/bin/php" -m >/dev/null 2>&1 \
+            || { rm -rf "$stage"; die "PHP candidate cannot load the active module configuration."; }
+        "${candidate}/sbin/php-fpm" -t -y "${config_path}/php-fpm.conf" >/dev/null 2>&1 \
+            || { rm -rf "$stage"; die "PHP candidate failed PHP-FPM configuration validation."; }
+        if ! _deploy_php_candidate "$candidate" /usr/local/php php-fpm "${config_path}/php-fpm.conf"; then
             rm -rf "$stage"
             die "PHP candidate deployment failed; the previous service was restarted when possible."
         fi
@@ -153,7 +223,7 @@ install_php() {
         systemctl enable php-fpm
     fi
 
-    _enforce_php_security_baseline
+    [[ "$mode" = install ]] && _enforce_php_security_baseline
     _remove_generated_phpinfo
 
     ln -sf /usr/local/php/bin/php /usr/bin/php

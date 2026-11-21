@@ -56,7 +56,7 @@ Safety:
   - Legacy phpMyAdmin is backed up root-only, then removed from the webroot.
   - Active service configuration is snapshotted and must remain unchanged.
   - PHP extension INI tuning and loaded modules must survive PHP replacement.
-  - Unmanaged PHP dynamic extensions block PHP apply before binaries change.
+  - Unmanaged PHP extensions are retained for same-series patches and block ABI transitions.
 
 Examples:
   lnmp upgrade inspect

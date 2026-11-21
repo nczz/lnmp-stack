@@ -359,13 +359,16 @@ The PHP upgrader builds and installs into a same-filesystem candidate prefix
 without stopping the active service, seeds that candidate from the active
 configuration, verifies its exact target version, and only then stops PHP-FPM
 for the prefix swap. It preserves the active PHP/FPM configuration and
-extension INI files, writes before/after module inventories, rebuilds every
-installed extension supported by `lib/extensions.sh`, and fails plus rolls
-back if a previously loaded module disappears. An unknown dynamic extension
-blocks the upgrade before binaries change; an agent must add pinned source,
-checksum, dependencies, build options, and tests to the extension registry
-rather than discarding it. The managed security overlay is the only allowed
-automatic PHP configuration change.
+extension INI files and writes before/after module inventories. A same-series
+patch retains the compatible extension ABI directory, including unmanaged
+custom modules, and requires an exact loaded-module match. A reviewed
+release-series transition rebuilds every installed extension supported by
+`lib/extensions.sh`; an unknown dynamic extension blocks that transition
+before binaries change. An agent must add pinned source, checksum,
+dependencies, build options, and tests to the extension registry rather than
+discarding it. A release-series transition may migrate only the effective
+`extension_dir` and managed security overlay; a same-series patch must preserve
+active configuration byte-for-byte.
 
 For the repository's single managed `[www]` pool, fresh installs MUST keep CLI
 `disable_functions` empty for WP-CLI/Composer, set `enable_dl=Off`, and apply
@@ -429,14 +432,17 @@ An AI agent changing versions or running an upgrade MUST:
 
 For a PHP upgrade, the expected alignment is concrete:
 
-- PHP runtime version equals `PHP_VER` in `versions.conf`.
-- Every project-supported dynamic extension that was loaded before remains
-  loaded and is rebuilt against the new PHP API.
+- Fresh installs equal `PHP_VER`; upgrades equal the `PHP_<series>_VER` target
+  selected from the installed release series in `versions.conf`.
+- Every previously loaded module remains loaded. Same-series patches preserve
+  compatible custom extension binaries; reviewed ABI transitions rebuild every
+  project-supported dynamic extension.
 - `php.ini`, `php-fpm.conf`, pool files, extension tuning, and the PHP-FPM
-  systemd unit retain their pre-upgrade content and metadata.
-- `99-lnmp-security.ini` equals the repository security baseline.
-- `php-fpm -t`, service readiness, module comparison, and application smoke
-  all pass.
+  systemd unit retain their pre-upgrade content and metadata, except for an
+  explicitly permitted ABI-path/security migration during a reviewed
+  release-series transition.
+- `php-fpm -t`, service readiness, exact module/configuration comparison, and
+  application smoke all pass.
 
 ---
 

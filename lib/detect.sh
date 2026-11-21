@@ -9,12 +9,14 @@ detect_os() {
 
     OS_ID="$ID"
     OS_VER="$VERSION_ID"
-    OS_CODENAME="$VERSION_CODENAME"
+    OS_CODENAME="${VERSION_CODENAME:-${UBUNTU_CODENAME:-unknown}}"
     ARCH="$(uname -m)"
 
     [[ "$OS_ID" = "ubuntu" ]] || die "Only Ubuntu is supported. Detected: ${OS_ID}"
     [[ "$ARCH" = "x86_64" || "$ARCH" = "aarch64" ]] || die "Unsupported architecture: ${ARCH}"
-    if [[ "$ARCH" != "x86_64" && "${INSTALL_TARGET:-}" != "nginx" ]]; then
+    if [[ "$ARCH" != x86_64 ]] \
+        && [[ "${INSTALL_TARGET:-}" != nginx && "${INSTALL_TARGET:-}" != php ]] \
+        && [[ "${LNMP_UPGRADE_OS_SAFE_COMPONENTS:-0}" != 1 ]]; then
         die "The ${INSTALL_TARGET:-lnmp} target requires x86_64 because MySQL/MariaDB are installed from official x86_64 binary tarballs. Detected: ${ARCH}"
     fi
 
@@ -30,7 +32,13 @@ check_os_support() {
             log_ok "Ubuntu ${OS_VER} (${OS_CODENAME}) — recommended target."
             ;;
         *)
-            die "Ubuntu ${OS_VER} is not supported. Supported LTS versions: 22.04, 24.04, 26.04."
+            if [[ "${LNMP_ALLOW_UNSUPPORTED_OS_UPGRADE:-0}" = 1 ]] \
+                && [[ "${LNMP_UPGRADE_MODE:-0}" = 1 ]] \
+                && [[ "${LNMP_UPGRADE_OS_SAFE_COMPONENTS:-0}" = 1 ]]; then
+                log_warn "Ubuntu ${OS_VER} is outside the supported LTS matrix; explicit Nginx/PHP upgrade-only override accepted. Build and application validation are mandatory."
+            else
+                die "Ubuntu ${OS_VER} is not supported. Supported LTS versions: 22.04, 24.04, 26.04."
+            fi
             ;;
     esac
 }
@@ -47,7 +55,7 @@ detect_hardware() {
     if [[ "$RAM_MB" -lt 512 ]]; then
         log_warn "RAM < 512MB — MySQL compile install will not be available, binary only."
     fi
-    if [[ "$DISK_AVAIL_GB" -lt 5 ]]; then
+    if [[ "${LNMP_UPGRADE_MODE:-0}" != 1 && "$DISK_AVAIL_GB" -lt 5 ]]; then
         die "Insufficient disk space. At least 5GB required, got ${DISK_AVAIL_GB}GB."
     fi
 }

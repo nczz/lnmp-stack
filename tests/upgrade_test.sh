@@ -11,6 +11,8 @@ source "${REPO_DIR}/lib/common.sh"
 source "${REPO_DIR}/lib/upgrade.sh"
 source "${REPO_DIR}/lib/extensions.sh"
 source "${REPO_DIR}/lib/php.sh"
+source "${REPO_DIR}/lib/detect.sh"
+
 LOG_FILE="${TEST_TMP}/upgrade.log"
 
 fail() {
@@ -279,6 +281,21 @@ if _upgrade_php_configs_preserved "$PHP_CONFIG_SNAPSHOT" "$PHP_CONFIG_LIVE" >/de
 fi
 unset PHP_UPGRADE_OLD_EXT_DIR PHP_UPGRADE_NEW_EXT_DIR
 
+PHP_EXTENSION_STORE="${TEST_TMP}/php-extension-store"
+PHP_EXTENSION_OLD="${TEST_TMP}/php-extension-old"
+PHP_EXTENSION_ALIAS="${TEST_TMP}/php-extension-alias"
+PHP_EXTENSION_COPY="${TEST_TMP}/php-extension-copy"
+mkdir -p "$PHP_EXTENSION_STORE"
+printf 'extension binary\n' > "${PHP_EXTENSION_STORE}/custom.so"
+ln -s "$PHP_EXTENSION_STORE" "$PHP_EXTENSION_OLD"
+ln -s "$PHP_EXTENSION_STORE" "$PHP_EXTENSION_ALIAS"
+_upgrade_copy_php_extension_dir "$PHP_EXTENSION_OLD" "$PHP_EXTENSION_ALIAS" \
+    || fail 'same-ABI extension preservation must accept aliases of the same directory'
+_upgrade_copy_php_extension_dir "$PHP_EXTENSION_OLD" "$PHP_EXTENSION_COPY" \
+    || fail 'same-ABI extension preservation must copy distinct directories'
+cmp -s "${PHP_EXTENSION_STORE}/custom.so" "${PHP_EXTENSION_COPY}/custom.so" \
+    || fail 'same-ABI extension preservation must retain custom extension binaries'
+
 PHP_INI_SCAN_DIR="${TEST_TMP}/extension-ini"
 mkdir -p "$PHP_INI_SCAN_DIR"
 printf 'extension=redis.so\nredis.session.locking_enabled=1\n' > "${PHP_INI_SCAN_DIR}/custom.ini"
@@ -326,6 +343,11 @@ _upgrade_requires_explicit_review redis 7.2.7 8.10.3 \
     _upgrade_php_scan_dir() { printf '/usr/local/php/etc/php.d'; }
     _upgrade_php_layout_supported
 ) || fail 'project-managed PHP layout must be upgradeable'
+(
+    _upgrade_php_config_root() { printf '/usr/local/php-8.2.35/etc'; }
+    _upgrade_php_scan_dir() { printf '/usr/local/php-8.2.35/conf.d'; }
+    _upgrade_php_layout_supported
+) || fail 'versioned legacy PHP layout must be upgradeable'
 if (
     _upgrade_php_config_root() { printf '/opt/php/etc'; }
     _upgrade_php_scan_dir() { printf '/opt/php/etc/conf.d'; }
@@ -334,35 +356,6 @@ if (
     fail 'nonstandard PHP config roots must require an explicit migration'
 fi
 
-PHP_LIVE_PREFIX="${TEST_TMP}/php-live"
-PHP_CANDIDATE="${TEST_TMP}/php-candidate"
-mkdir -p "$PHP_LIVE_PREFIX" "$PHP_CANDIDATE"
-printf 'old\n' > "${PHP_LIVE_PREFIX}/version"
-printf 'new\n' > "${PHP_CANDIDATE}/version"
-PHP_SERVICE_ACTIONS=''
-systemctl() {
-    PHP_SERVICE_ACTIONS+="${PHP_SERVICE_ACTIONS:+,}$1"
-    return 0
-}
-_deploy_php_candidate "$PHP_CANDIDATE" "$PHP_LIVE_PREFIX" php-fpm \
-    || fail 'PHP candidate prefix deployment must succeed'
-assert_eq new "$(cat "${PHP_LIVE_PREFIX}/version")" 'atomic PHP candidate activation'
-assert_eq stop "$PHP_SERVICE_ACTIONS" 'PHP candidate deployment service stop'
-[[ ! -e "$PHP_CANDIDATE" ]] || fail 'activated PHP candidate path must be consumed'
-unset -f systemctl
-
-PHP_CANDIDATE="${TEST_TMP}/php-candidate-stop-failure"
-mkdir -p "$PHP_CANDIDATE"
-printf 'blocked\n' > "${PHP_CANDIDATE}/version"
-systemctl() { return 1; }
-if _deploy_php_candidate "$PHP_CANDIDATE" "$PHP_LIVE_PREFIX" php-fpm; then
-    fail 'PHP candidate deployment must stop when the service cannot stop'
-fi
-assert_eq new "$(cat "${PHP_LIVE_PREFIX}/version")" \
-    'failed PHP candidate deployment preserves live prefix'
-assert_eq blocked "$(cat "${PHP_CANDIDATE}/version")" \
-    'failed PHP candidate deployment preserves candidate'
-unset -f systemctl
 
 PROC_ROOT="${TEST_TMP}/proc"
 EXPECTED_SERVICE_BIN="${TEST_TMP}/expected-nginx"
@@ -371,15 +364,13 @@ touch "$EXPECTED_SERVICE_BIN"
 EXPECTED_SERVICE_BIN="$(readlink -f "$EXPECTED_SERVICE_BIN")"
 ln -s "$EXPECTED_SERVICE_BIN" "${PROC_ROOT}/1234/exe"
 LNMP_UPGRADE_PROC_ROOT="$PROC_ROOT"
+LNMP_NGINX_PID_FILE="${TEST_TMP}/nginx.pid"
+printf '1234\n' > "$LNMP_NGINX_PID_FILE"
 systemctl() {
-    case "$1" in
-        is-active) printf 'active\n' ;;
-        show) printf '1234\n' ;;
-        *) return 1 ;;
-    esac
+    fail 'Nginx process ownership must not depend on systemd'
 }
 _upgrade_service_owned nginx "$EXPECTED_SERVICE_BIN" \
-    || fail 'systemd-owned expected service binary must pass preflight'
+    || fail 'live Nginx master using the expected binary must pass preflight'
 EXPECTED_SERVICE_LINK="${TEST_TMP}/expected-nginx-link"
 ln -s "$EXPECTED_SERVICE_BIN" "$EXPECTED_SERVICE_LINK"
 _upgrade_service_owned nginx "$EXPECTED_SERVICE_LINK" \
@@ -401,7 +392,94 @@ if _upgrade_service_owned nginx "$EXPECTED_SERVICE_BIN" >/dev/null 2>&1; then
     fail 'unexpected systemd service binary must fail preflight'
 fi
 unset -f systemctl
-unset LNMP_UPGRADE_PROC_ROOT
+unset LNMP_UPGRADE_PROC_ROOT LNMP_NGINX_PID_FILE
+ATOMIC_SOURCE="${TEST_TMP}/atomic-source"
+ATOMIC_DEST="${TEST_TMP}/atomic-destination"
+printf 'old\n' > "$ATOMIC_DEST"
+printf 'new\n' > "$ATOMIC_SOURCE"
+_upgrade_install_file_atomically "$ATOMIC_SOURCE" "$ATOMIC_DEST" \
+    || fail 'atomic file activation must succeed'
+assert_eq new "$(cat "$ATOMIC_DEST")" 'atomic file activation content'
+[[ ! -e "${ATOMIC_DEST}.lnmp-new" ]] \
+    || fail 'atomic file activation must consume its staged path'
+SSL_SAFE_DIR="${TEST_TMP}/nginx-ssl-safe"
+mkdir -p "$SSL_SAFE_DIR"
+cat > "${SSL_SAFE_DIR}/site.conf" <<'EOF'
+server
+{
+    listen 80;
+    listen 443 ssl http2;
+    location / {
+        try_files $uri =404;
+    }
+    ssl on;
+}
+server {
+    listen 80;
+    ssl off;
+}
+EOF
+chmod 0640 "${SSL_SAFE_DIR}/site.conf"
+_upgrade_nginx_migrate_redundant_ssl_on "$SSL_SAFE_DIR" \
+    || fail 'redundant legacy Nginx SSL directive must migrate'
+if grep -Eq '^[[:space:]]*ssl[[:space:]]+(on|off)' "${SSL_SAFE_DIR}/site.conf"; then
+    fail 'legacy Nginx SSL directive must be removed'
+fi
+assert_eq 640 "$(stat -f '%Lp' "${SSL_SAFE_DIR}/site.conf" 2>/dev/null \
+    || stat -c '%a' "${SSL_SAFE_DIR}/site.conf")" \
+    'Nginx SSL migration file mode'
+
+SSL_UNSAFE_DIR="${TEST_TMP}/nginx-ssl-unsafe"
+mkdir -p "$SSL_UNSAFE_DIR"
+cat > "${SSL_UNSAFE_DIR}/site.conf" <<'EOF'
+server {
+    listen 443;
+    ssl on;
+}
+EOF
+cp "${SSL_UNSAFE_DIR}/site.conf" "${SSL_UNSAFE_DIR}/site.before"
+if _upgrade_nginx_migrate_redundant_ssl_on "$SSL_UNSAFE_DIR" >/dev/null 2>&1; then
+    fail 'non-redundant legacy Nginx SSL directive must block migration'
+fi
+cmp -s "${SSL_UNSAFE_DIR}/site.before" "${SSL_UNSAFE_DIR}/site.conf" \
+    || fail 'blocked Nginx SSL migration must not change configuration'
+SSL_ACTIVE_DIR="${TEST_TMP}/nginx-ssl-active"
+mkdir -p "${SSL_ACTIVE_DIR}/bak"
+cp "${SSL_SAFE_DIR}/site.conf" "${SSL_ACTIVE_DIR}/site.conf"
+cat >> "${SSL_ACTIVE_DIR}/site.conf" <<'EOF'
+server {
+    listen 443 ssl;
+    ssl on;
+}
+EOF
+cp "${SSL_UNSAFE_DIR}/site.before" "${SSL_ACTIVE_DIR}/bak/inactive.conf"
+printf '%s\n' "${SSL_ACTIVE_DIR}/site.conf" > "${SSL_ACTIVE_DIR}/active.manifest"
+_upgrade_nginx_migrate_redundant_ssl_on "$SSL_ACTIVE_DIR" \
+    "${SSL_ACTIVE_DIR}/active.manifest" \
+    || fail 'active Nginx configuration migration must ignore inactive backups'
+if grep -Eq '^[[:space:]]*ssl[[:space:]]+on' "${SSL_ACTIVE_DIR}/site.conf"; then
+    fail 'active Nginx legacy SSL directive must be removed'
+fi
+grep -Eq '^[[:space:]]*ssl[[:space:]]+on' "${SSL_ACTIVE_DIR}/bak/inactive.conf" \
+    || fail 'inactive Nginx backup must remain unchanged'
+
+
+
+OS_VER=18.04
+OS_CODENAME=bionic
+INSTALL_TARGET=nginx
+LNMP_UPGRADE_MODE=1
+LNMP_UPGRADE_OS_SAFE_COMPONENTS=1
+LNMP_ALLOW_UNSUPPORTED_OS_UPGRADE=1
+check_os_support >/dev/null
+if (LNMP_UPGRADE_MODE=0; check_os_support) >/dev/null 2>&1; then
+    fail 'unsupported OS override must not permit a fresh installation'
+fi
+if (LNMP_UPGRADE_OS_SAFE_COMPONENTS=0; check_os_support) >/dev/null 2>&1; then
+    fail 'unsupported OS override must not permit non-Nginx/PHP upgrade components'
+fi
+unset LNMP_ALLOW_UNSUPPORTED_OS_UPGRADE LNMP_UPGRADE_MODE LNMP_UPGRADE_OS_SAFE_COMPONENTS INSTALL_TARGET
+
 
 LNMP_UPGRADE_FREE_KB=5242880
 _upgrade_validate_capacity
@@ -572,9 +650,15 @@ _upgrade_runtime_version() { printf '%s' "${RUNTIME[$1]:-}"; }
 _upgrade_state_or_empty() { printf '%s' "$OPENSSL_TARGET_LABEL"; }
 _upgrade_php_security_hardened() { return 0; }
 _upgrade_generated_phpinfo_absent() { return 0; }
+assert_eq 8.3.37 "$(_upgrade_target_version php)" 'PHP 8.3 patch target'
+RUNTIME[php]=8.2.35
+assert_eq 8.2.36 "$(_upgrade_target_version php)" 'PHP 8.2 patch target'
+RUNTIME[php]=8.5.12
+assert_eq 8.5.13 "$(_upgrade_target_version php)" 'PHP 8.5 patch target'
+RUNTIME[php]=8.3.15
 Enable_Nginx_Openssl=n
 assert_eq REVIEW "$(_upgrade_component_status nginx)" 'v1.3 Nginx transition'
-assert_eq REVIEW "$(_upgrade_component_status php)" 'v1.3 PHP transition'
+assert_eq OUTDATED "$(_upgrade_component_status php)" 'historical PHP release-series patch transition'
 assert_eq REVIEW "$(_upgrade_component_status db)" 'v1.3 MariaDB transition'
 assert_eq REVIEW "$(_upgrade_component_status redis)" 'v1.3 Redis transition'
 
@@ -618,7 +702,13 @@ assert_eq 'nginx' "$LOADED_TARGET" 'Nginx-only architecture target'
 APPLIED=()
 upgrade_apply php >/dev/null
 assert_eq 'php' "${APPLIED[*]}" 'explicit REVIEW selection'
-assert_eq 'upgrade' "$LOADED_TARGET" 'general upgrade architecture target'
+assert_eq 'php' "$LOADED_TARGET" 'PHP-only upgrade architecture target'
+
+APPLIED=()
+upgrade_apply nginx php >/dev/null
+assert_eq 'nginx php' "${APPLIED[*]}" 'combined Nginx/PHP selection'
+assert_eq 1 "$LNMP_UPGRADE_OS_SAFE_COMPONENTS" \
+    'combined Nginx/PHP selection remains architecture and legacy-OS safe'
 
 set +e
 (upgrade_apply redis >/dev/null 2>&1)

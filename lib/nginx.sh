@@ -45,18 +45,21 @@ install_nginx() {
         --with-http_realip_module
         --with-http_auth_request_module
         --with-http_secure_link_module
-        --with-http_xslt_module
         --with-stream
         --with-stream_ssl_module
         --with-stream_realip_module
     )
+    [[ "${Enable_Nginx_Xslt:-y}" = y ]] \
+        && nginx_configure_args+=( --with-http_xslt_module )
+
 
     if [[ "${Enable_Nginx_Openssl}" = 'y' ]]; then
         _prepare_nginx_openssl
         cd "${cur_dir}/src/nginx-${NGINX_VER}" || die "Cannot enter Nginx source directory"
         nginx_configure_args+=( "--with-openssl=${cur_dir}/src/openssl-${OPENSSL_VER}" )
         nginx_configure_args+=( "--with-openssl-opt=no-shared no-threads no-tests" )
-        nginx_configure_args+=( --with-http_v3_module )
+        [[ "${Enable_Nginx_HTTP3:-y}" = y ]] \
+            && nginx_configure_args+=( --with-http_v3_module )
     fi
 
     if [[ "${Memory_Allocator}" = 'jemalloc' ]]; then
@@ -94,7 +97,7 @@ install_nginx() {
             rm -f /usr/local/nginx/sbin/nginx.new
             die "New Nginx binary failed configuration validation"
         }
-        mv /usr/local/nginx/sbin/nginx.new /usr/local/nginx/sbin/nginx
+        log_ok "Nginx candidate staged: /usr/local/nginx/sbin/nginx.new"
     else
         make_install
         mkdir -p /usr/local/nginx/conf/{vhost,ssl} /home/wwwlogs
@@ -104,17 +107,19 @@ install_nginx() {
         systemctl enable nginx
     fi
 
-    ln -sf /usr/local/nginx/sbin/nginx /usr/bin/nginx
-    record_installed_version NGINX "$NGINX_VER"
-    if [[ "${Enable_Nginx_Openssl}" = 'y' ]]; then
-        record_installed_version OPENSSL "$OPENSSL_TARGET_LABEL"
+    if [[ "$mode" = 'install' ]]; then
+        ln -sf /usr/local/nginx/sbin/nginx /usr/bin/nginx
+        record_installed_version NGINX "$NGINX_VER"
+        if [[ "${Enable_Nginx_Openssl}" = 'y' ]]; then
+            record_installed_version OPENSSL "$OPENSSL_TARGET_LABEL"
+        fi
+        [[ "${Memory_Allocator}" = 'jemalloc' ]] && record_installed_version JEMALLOC "$JEMALLOC_VER"
+        [[ "${Enable_Nginx_Lua}" = 'y' ]] && {
+            record_installed_version LUAJIT "$LUAJIT_VER"
+            record_installed_version LUA_NGINX_MODULE "$LUA_NGINX_MODULE_VER"
+            record_installed_version NGX_DEVEL_KIT "$NGX_DEVEL_KIT_VER"
+        }
     fi
-    [[ "${Memory_Allocator}" = 'jemalloc' ]] && record_installed_version JEMALLOC "$JEMALLOC_VER"
-    [[ "${Enable_Nginx_Lua}" = 'y' ]] && {
-        record_installed_version LUAJIT "$LUAJIT_VER"
-        record_installed_version LUA_NGINX_MODULE "$LUA_NGINX_MODULE_VER"
-        record_installed_version NGX_DEVEL_KIT "$NGX_DEVEL_KIT_VER"
-    }
 
     log_ok "Nginx ${NGINX_VER} ${mode} completed."
 }

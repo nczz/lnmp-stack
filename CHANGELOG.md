@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.19 — 2026-11-21
+
+### Heterogeneous Legacy-Fleet Upgrades
+
+- Pin the latest patch releases for each supported installed PHP series (8.2.36, 8.3.37, 8.4.28, and 8.5.13) while keeping PHP 8.4.28 as the fresh-install default, preventing an automated patch run from crossing a PHP release-series boundary.
+- Rebuild PHP with the live `php-config --configure-options`, active configuration root, and scan directory; support versioned legacy layouts, process-owned PHP-FPM instances whose systemd unit is inactive, PHP-only `aarch64` upgrades, and explicitly reviewed end-of-life Ubuntu hosts.
+- Preserve same-ABI custom extension binaries and require exact before/after module and configuration inventories. Resolve physical extension directories before copying so two legacy prefixes that alias the same directory cannot fail with a self-copy error.
+- Make Nginx replacement process-aware and atomic even when systemd does not own the live master, recover deleted-but-running masters, migrate only active legacy `ssl on/off` directives with rollback, and support low-disk and explicitly reviewed legacy-OS upgrades.
+- Add regression coverage for per-series PHP selection, versioned configuration layouts, aliased extension directories, legacy Nginx configuration migration, process-aware activation, and temporary build-swap cleanup.
+
 ## v1.7.18 — 2026-11-21
 
 ### Legacy PHP Prefix Migration

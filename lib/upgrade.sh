@@ -75,11 +75,43 @@ _upgrade_runtime_version() {
             ;;
     esac
 }
+_upgrade_php_target_version() {
+    local current series
+    current=$(_upgrade_runtime_version php)
+    series="${current%.*}"
+    case "$series" in
+        8.2) printf '%s' "$PHP_82_VER" ;;
+        8.3) printf '%s' "$PHP_83_VER" ;;
+        8.4) printf '%s' "$PHP_84_VER" ;;
+        8.5) printf '%s' "$PHP_85_VER" ;;
+        *) printf '%s' "$PHP_VER" ;;
+    esac
+}
+
+_upgrade_select_php_target() {
+    local target
+    target=$(_upgrade_php_target_version)
+    case "$target" in
+        "$PHP_82_VER")
+            PHP_VER="$PHP_82_VER"; PHP_URL="$PHP_82_URL"; PHP_SHA256="$PHP_82_SHA256"
+            ;;
+        "$PHP_83_VER")
+            PHP_VER="$PHP_83_VER"; PHP_URL="$PHP_83_URL"; PHP_SHA256="$PHP_83_SHA256"
+            ;;
+        "$PHP_84_VER")
+            PHP_VER="$PHP_84_VER"; PHP_URL="$PHP_84_URL"; PHP_SHA256="$PHP_84_SHA256"
+            ;;
+        "$PHP_85_VER")
+            PHP_VER="$PHP_85_VER"; PHP_URL="$PHP_85_URL"; PHP_SHA256="$PHP_85_SHA256"
+            ;;
+    esac
+}
+
 
 _upgrade_target_version() {
     case "$1" in
         nginx) printf '%s' "$NGINX_VER" ;;
-        php) printf '%s' "$PHP_VER" ;;
+        php) _upgrade_php_target_version ;;
         db)
             if [[ -x /usr/local/mariadb/bin/mariadb ]]; then
                 printf '%s' "$MARIADB_VER"
@@ -301,7 +333,7 @@ _upgrade_init_log() {
 
 _upgrade_require_commands() {
     local component command
-    local -a required=(wget sha256sum tar diff cmp stat find comm paste readlink)
+    local -a required=(wget sha256sum tar diff cmp stat find comm paste readlink pgrep)
     local -a missing=()
 
     for component in "$@"; do
@@ -399,18 +431,178 @@ _upgrade_php_extension_managed() {
 }
 
 _upgrade_validate_php_extensions() {
-    local ext unknown=''
+    local ext unknown='' current
+    current=$(_upgrade_runtime_version php)
+    if [[ "${current%.*}" = "${PHP_VER%.*}" ]]; then
+        log_info "PHP patch upgrade keeps the current extension ABI; managed and custom dynamic extensions will be preserved and verified by module inventory."
+        return 0
+    fi
     while IFS= read -r ext; do
         [[ -n "$ext" ]] || continue
         _upgrade_php_extension_managed "$ext" || unknown+="${unknown:+, }${ext}"
     done < <(_upgrade_php_dynamic_extensions)
     [[ -z "$unknown" ]] || die_code "$EX_USAGE" \
-        "PHP uses unmanaged dynamic extension(s): ${unknown}. Add pinned source/build metadata to lib/extensions.sh before upgrading PHP; no binaries were changed. Log: ${LOG_FILE}"
+        "PHP uses unmanaged dynamic extension(s): ${unknown}. Add pinned source/build metadata to lib/extensions.sh before upgrading PHP across an ABI boundary; no binaries were changed. Log: ${LOG_FILE}"
 }
+
+_upgrade_nginx_pid_file() {
+    local output line stripped value pid_file='/usr/local/nginx/logs/nginx.pid'
+    if [[ -n "${LNMP_NGINX_PID_FILE:-}" ]]; then
+        pid_file="$LNMP_NGINX_PID_FILE"
+    else
+        output=$(/usr/local/nginx/sbin/nginx -T 2>&1) || return 1
+        while IFS= read -r line; do
+            stripped="${line#"${line%%[![:space:]]*}"}"
+            [[ "$stripped" = pid[[:space:]]* ]] || continue
+            value="${stripped#pid}"
+            value="${value#"${value%%[![:space:]]*}"}"
+            value="${value%%;*}"
+            value="${value%"${value##*[![:space:]]}"}"
+            [[ -n "$value" ]] || return 1
+            if [[ "$value" = /* ]]; then
+                pid_file="$value"
+            else
+                pid_file="/usr/local/nginx/${value}"
+            fi
+            break
+        done <<< "$output"
+    fi
+    [[ "$pid_file" = /* && "$pid_file" != *[[:space:]]* ]] || return 1
+    printf '%s' "$pid_file"
+}
+
+_upgrade_nginx_master_pid() {
+    local pid_file pid proc_root="${LNMP_UPGRADE_PROC_ROOT:-/proc}"
+    pid_file=$(_upgrade_nginx_pid_file) || return 1
+    [[ -r "$pid_file" ]] || return 1
+    pid=$(<"$pid_file")
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    if [[ "$proc_root" = /proc ]]; then
+        kill -0 "$pid" 2>/dev/null || return 1
+    else
+        [[ -d "${proc_root}/${pid}" ]] || return 1
+    fi
+    printf '%s' "$pid"
+}
+
+_upgrade_nginx_process_owned() {
+    local expected="$1" pid actual expected_real
+    local proc_root="${LNMP_UPGRADE_PROC_ROOT:-/proc}"
+    pid=$(_upgrade_nginx_master_pid) || {
+        log_err "Nginx has no valid live master PID."
+        return 1
+    }
+    actual=$(readlink -f "${proc_root}/${pid}/exe" 2>/dev/null || true)
+    expected_real=$(readlink -f "$expected" 2>/dev/null || true)
+    [[ -n "$expected_real" && "$actual" = "$expected_real" ]] || {
+        log_err "Nginx master PID ${pid} runs ${actual:-unknown}; expected ${expected_real:-$expected}."
+        return 1
+    }
+}
+_upgrade_php_master_pid() {
+    local pid
+    pid=$(pgrep -o php-fpm 2>/dev/null || true)
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    printf '%s' "$pid"
+}
+
+_upgrade_php_process_owned() {
+    local expected="$1" pid actual expected_real
+    pid=$(_upgrade_php_master_pid) || {
+        log_err "PHP-FPM has no valid live master PID."
+        return 1
+    }
+    actual=$(readlink -f "/proc/${pid}/exe" 2>/dev/null || true)
+    expected_real=$(readlink -f "$expected" 2>/dev/null || true)
+    [[ -n "$expected_real" && "$actual" = "$expected_real" ]] || {
+        log_err "PHP-FPM master PID ${pid} runs ${actual:-unknown}; expected ${expected_real:-$expected}."
+        return 1
+    }
+}
+
+
+_upgrade_install_file_atomically() {
+    local source="$1" destination="$2" staged
+    staged="${destination}.lnmp-new"
+    rm -f -- "$staged"
+    install -p "$source" "$staged" || return 1
+    mv -f -- "$staged" "$destination"
+}
+
+_upgrade_wait_for_nginx_new_master() {
+    local pid_file="$1" old_pid="$2" i new_pid
+    for ((i = 0; i < 30; i++)); do
+        if [[ -r "$pid_file" ]]; then
+            new_pid=$(<"$pid_file")
+            if [[ "$new_pid" =~ ^[1-9][0-9]*$ && "$new_pid" != "$old_pid" ]] \
+                && kill -0 "$new_pid" 2>/dev/null; then
+                printf '%s' "$new_pid"
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    return 1
+}
+
+_upgrade_wait_for_process_exit() {
+    local pid="$1" i timeout="${LNMP_NGINX_DRAIN_TIMEOUT:-120}"
+    [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || return 1
+    for ((i = 0; i < timeout; i++)); do
+        kill -0 "$pid" 2>/dev/null || return 0
+        sleep 1
+    done
+    return 1
+}
+_upgrade_recover_nginx_deleted_master() {
+    local expected="$1" pid pid_file actual expected_real new_pid='' new_actual
+    pid=$(_upgrade_nginx_master_pid) || return 1
+    actual=$(readlink "/proc/${pid}/exe" 2>/dev/null || true)
+    [[ "$actual" = *' (deleted)' ]] || return 0
+    expected_real=$(readlink -f "$expected" 2>/dev/null || true)
+    [[ -x "$expected_real" ]] || return 1
+    "$expected_real" -t -p /usr/local/nginx/ -c conf/nginx.conf >/dev/null 2>&1 \
+        || return 1
+    pid_file=$(_upgrade_nginx_pid_file) || return 1
+    log_warn "Nginx master PID ${pid} runs a deleted inode; performing a socket-preserving binary re-exec before upgrade."
+    if kill -USR2 "$pid" \
+        && new_pid=$(_upgrade_wait_for_nginx_new_master "$pid_file" "$pid"); then
+        new_actual=$(readlink -f "/proc/${new_pid}/exe" 2>/dev/null || true)
+        if [[ "$new_actual" = "$expected_real" ]] \
+            && "$expected_real" -t -p /usr/local/nginx/ -c conf/nginx.conf >/dev/null 2>&1 \
+            && kill -WINCH "$pid"; then
+            sleep 2
+            if kill -0 "$new_pid" 2>/dev/null \
+                && kill -QUIT "$pid" \
+                && _upgrade_wait_for_process_exit "$pid" \
+                && kill -0 "$new_pid" 2>/dev/null; then
+                log_ok "Recovered Nginx onto the current on-disk binary without closing listening sockets."
+                return 0
+            fi
+        fi
+    fi
+    if [[ -n "$new_pid" ]]; then
+        kill -QUIT "$new_pid" 2>/dev/null || true
+        _upgrade_wait_for_process_exit "$new_pid" || true
+    fi
+    kill -HUP "$pid" 2>/dev/null || true
+    log_err "Nginx deleted-inode recovery failed; the original master was retained."
+    return 1
+}
+
 
 _upgrade_service_owned() {
     local service="$1" expected="$2" state pid actual expected_real
     local proc_root="${LNMP_UPGRADE_PROC_ROOT:-/proc}"
+    if [[ "$service" = nginx ]]; then
+        _upgrade_nginx_process_owned "$expected"
+        return
+    fi
+    if [[ "$service" = php-fpm ]]; then
+        _upgrade_php_process_owned "$expected"
+        return
+    fi
     state=$(systemctl is-active "$service" 2>/dev/null || true)
     [[ "$state" = active ]] || {
         log_err "${service} is '${state:-unknown}', not active under systemd."
@@ -595,12 +787,12 @@ _upgrade_php_layout_supported() {
     local config_root scan
     config_root=$(_upgrade_php_config_root || true)
     scan=$(_upgrade_php_scan_dir || true)
-    [[ "$config_root" = /usr/local/php/etc ]] || {
-        log_err "PHP configuration root '${config_root:-unknown}' requires an explicit migration to /usr/local/php/etc."
+    [[ "$config_root" = /usr/local/* && "$config_root" != *[[:space:]]* ]] || {
+        log_err "PHP configuration root '${config_root:-unknown}' is not a supported absolute /usr/local layout."
         return 1
     }
-    [[ "$scan" = /usr/local/php/etc/php.d ]] || {
-        log_err "PHP scan directory '${scan:-unknown}' requires an explicit migration to /usr/local/php/etc/php.d."
+    [[ "$scan" = /usr/local/* && "$scan" != *[[:space:]]* ]] || {
+        log_err "PHP scan directory '${scan:-unknown}' is not a supported absolute /usr/local layout."
         return 1
     }
 }
@@ -610,6 +802,8 @@ _upgrade_preflight_components() {
     for component in "$@"; do
         case "$component" in
             nginx)
+                _upgrade_recover_nginx_deleted_master /usr/local/nginx/sbin/nginx \
+                    || die_code "$EX_UNAVAILABLE" "Nginx deleted-inode recovery failed; no upgrade was attempted."
                 _upgrade_service_owned nginx /usr/local/nginx/sbin/nginx \
                     || die_code "$EX_UNAVAILABLE" "Nginx service ownership is unsafe; no binaries were changed."
                 /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1 \
@@ -618,8 +812,10 @@ _upgrade_preflight_components() {
                 ;;
             php)
                 _upgrade_service_owned php-fpm /usr/local/php/sbin/php-fpm \
-                    || die_code "$EX_UNAVAILABLE" "PHP-FPM service ownership is unsafe; no binaries were changed."
-                /usr/local/php/sbin/php-fpm -t -y /usr/local/php/etc/php-fpm.conf >/dev/null 2>&1 \
+                    || die_code "$EX_UNAVAILABLE" "PHP-FPM process ownership is unsafe; no binaries were changed."
+                config_root=$(_upgrade_php_config_root || true)
+                [[ -n "$config_root" ]] \
+                    && /usr/local/php/sbin/php-fpm -t -y "${config_root}/php-fpm.conf" >/dev/null 2>&1 \
                     || die_code "$EX_UNAVAILABLE" "Current PHP-FPM configuration is invalid; no binaries were changed."
                 _upgrade_php_layout_supported \
                     || die_code "$EX_USAGE" "Unsupported PHP configuration layout; no binaries were changed."
@@ -999,6 +1195,16 @@ _upgrade_migrate_php_extension_dir() {
     done
 }
 
+_upgrade_copy_php_extension_dir() {
+    local old_dir="$1" new_dir="$2" old_real new_real
+    [[ -d "$old_dir" ]] || return 0
+    old_real=$(cd -P -- "$old_dir" 2>/dev/null && pwd -P) || old_real="$old_dir"
+    new_real=$(cd -P -- "$new_dir" 2>/dev/null && pwd -P) || new_real="$new_dir"
+    [[ "$old_real" = "$new_real" ]] && return 0
+    mkdir -p "$new_dir" \
+        && cp -a "${old_dir}/." "$new_dir/"
+}
+
 _upgrade_php_config_file_preserved() {
     local old="$1" current="$2" tmp rc=1
     [[ -f "$old" && -f "$current" ]] || return 1
@@ -1172,15 +1378,13 @@ upgrade_adopt() {
 
 _upgrade_backup_nginx_runtime_libs() {
     local backup_root="$1" path
-    local -a paths=()
     mkdir -p "${backup_root}/nginx-runtime-libs"
     shopt -s nullglob
-    paths=(/usr/local/lib/libjemalloc.so* /usr/local/lib/libluajit*.so*)
-    shopt -u nullglob
-    for path in "${paths[@]}"; do
+    for path in /usr/local/lib/libjemalloc.so* /usr/local/lib/libluajit*.so*; do
         cp -a "$path" "${backup_root}/nginx-runtime-libs/" \
             || die "Cannot back up Nginx runtime library: ${path}"
     done
+    shopt -u nullglob
 }
 
 _upgrade_restore_nginx_runtime_libs() {
@@ -1190,73 +1394,305 @@ _upgrade_restore_nginx_runtime_libs() {
     cp -a "${backup_root}/nginx-runtime-libs/." /usr/local/lib/
     ldconfig
 }
+_upgrade_nginx_validate_redundant_ssl_on_file() {
+    local file="$1"
+    awk '
+        {
+            original = $0
+            structural = $0
+            sub(/[[:space:]]*#.*/, "", structural)
+            if (!in_server && structural ~ /^[[:space:]]*server[[:space:]]*\{/) {
+                in_server = 1
+                server_depth = depth + 1
+                has_legacy_ssl = 0
+                has_listen_ssl = 0
+                pending_server = 0
+            } else if (!in_server && structural ~ /^[[:space:]]*server[[:space:]]*$/) {
+                pending_server = 1
+            } else if (!in_server && pending_server && structural ~ /^[[:space:]]*\{/) {
+                in_server = 1
+                server_depth = depth + 1
+                has_legacy_ssl = 0
+                has_listen_ssl = 0
+                pending_server = 0
+            } else if (!in_server && structural !~ /^[[:space:]]*$/) {
+                pending_server = 0
+            }
+            if (original ~ /^[[:space:]]*ssl[[:space:]]+(on|off)[[:space:]]*;([[:space:]]*#.*)?[[:space:]]*$/) {
+                if (!in_server) exit 42
+                if (original ~ /^[[:space:]]*ssl[[:space:]]+on[[:space:]]*;/) {
+                    has_legacy_ssl = 1
+                }
+            }
+            if (in_server \
+                && structural ~ /^[[:space:]]*listen[[:space:]]/ \
+                && structural ~ /(^|[[:space:]])ssl([[:space:];]|$)/) {
+                has_listen_ssl = 1
+            }
+            structural_copy = structural
+            opens = gsub(/\{/, "", structural_copy)
+            structural_copy = structural
+            closes = gsub(/\}/, "", structural_copy)
+            depth += opens - closes
+            if (in_server && depth < server_depth) {
+                if (has_legacy_ssl && !has_listen_ssl) exit 43
+                in_server = 0
+            }
+        }
+        END {
+            if (in_server) exit 44
+        }
+    ' "$file"
+}
+
+_upgrade_nginx_migrate_redundant_ssl_on() {
+    local conf_dir="$1" manifest="${2:-}" file tmp content count=0
+    local sources candidates seen
+    sources=$(mktemp "${TMPDIR:-/tmp}/lnmp-nginx-config-sources.XXXXXX") || return 1
+    candidates=$(mktemp "${TMPDIR:-/tmp}/lnmp-nginx-config-candidates.XXXXXX") || {
+        rm -f -- "$sources"
+        return 1
+    }
+    seen=$(mktemp "${TMPDIR:-/tmp}/lnmp-nginx-config-seen.XXXXXX") || {
+        rm -f -- "$sources" "$candidates"
+        return 1
+    }
+
+    if [[ -n "$manifest" ]]; then
+        while IFS= read -r file || [[ -n "$file" ]]; do
+            [[ -n "$file" ]] && printf '%s\n' "$file"
+        done < "$manifest" > "$sources"
+    else
+        find "$conf_dir" \( -type f -o -type l \) -print > "$sources"
+    fi
+
+    while IFS= read -r file || [[ -n "$file" ]]; do
+        [[ -f "$file" || -L "$file" ]] || continue
+        grep -Eq '^[[:space:]]*ssl[[:space:]]+(on|off)[[:space:]]*;([[:space:]]*#.*)?[[:space:]]*$' "$file" \
+            || continue
+        if grep -Fqx -- "$file" "$seen"; then
+            continue
+        fi
+        printf '%s\n' "$file" >> "$seen"
+        case "$file" in
+            "$conf_dir"/*) ;;
+            *)
+                log_err "Legacy 'ssl on/off;' migration refuses active configuration outside ${conf_dir}: ${file}"
+                rm -f -- "$sources" "$candidates" "$seen"
+                return 1
+                ;;
+        esac
+        if [[ -L "$file" ]]; then
+            log_err "Legacy 'ssl on/off;' migration refuses symlinked configuration: ${file}"
+            rm -f -- "$sources" "$candidates" "$seen"
+            return 1
+        fi
+        _upgrade_nginx_validate_redundant_ssl_on_file "$file" || {
+            log_err "Legacy SSL directive in ${file} cannot be migrated safely; 'ssl on;' requires an explicit 'listen ... ssl' in the same server block."
+            rm -f -- "$sources" "$candidates" "$seen"
+            return 1
+        }
+        printf '%s\n' "$file" >> "$candidates"
+    done < "$sources"
+
+    while IFS= read -r file || [[ -n "$file" ]]; do
+        [[ -n "$file" ]] || continue
+        tmp="${file}.lnmp-ssl-on.$$"
+        content="${tmp}.content"
+        rm -f -- "$tmp" "$content"
+        cp -a -- "$file" "$tmp" || {
+            rm -f -- "$sources" "$candidates" "$seen"
+            return 1
+        }
+        awk '
+            $0 !~ /^[[:space:]]*ssl[[:space:]]+(on|off)[[:space:]]*;([[:space:]]*#.*)?[[:space:]]*$/
+        ' "$file" > "$content" || {
+            rm -f -- "$tmp" "$content" "$sources" "$candidates" "$seen"
+            return 1
+        }
+        cat "$content" > "$tmp" || {
+            rm -f -- "$tmp" "$content" "$sources" "$candidates" "$seen"
+            return 1
+        }
+        touch -r "$file" "$tmp" || {
+            rm -f -- "$tmp" "$content" "$sources" "$candidates" "$seen"
+            return 1
+        }
+        mv -f -- "$tmp" "$file" || {
+            rm -f -- "$tmp" "$content" "$sources" "$candidates" "$seen"
+            return 1
+        }
+        rm -f -- "$content"
+        ((count += 1))
+    done < "$candidates"
+    rm -f -- "$sources" "$candidates" "$seen"
+    if (( count > 0 )); then
+        log_ok "Migrated legacy 'ssl on/off;' directives in ${count} active Nginx configuration file(s); original configuration is in the rollback backup."
+    fi
+}
+
+_upgrade_restore_config_tree() {
+    local snapshot="$1" live="$2"
+    [[ -d "$snapshot" ]] || return 0
+    rm -rf -- "$live" || return 1
+    cp -a -- "$snapshot" "$live"
+}
+
 
 _upgrade_nginx() {
-    local backup_root backup_bin
+    local backup_root backup_bin live_bin candidate old_live pid_file active_config active_manifest
+    local old_pid new_pid='' activated=0 old_workers_stopped=0
+    live_bin=/usr/local/nginx/sbin/nginx
+    candidate="${live_bin}.new"
+    old_live="${live_bin}.lnmp-old"
+    [[ ! -e "$candidate" && ! -e "$old_live" ]] \
+        || die "Stale Nginx upgrade artifact exists; inspect ${candidate} and ${old_live} before retrying."
+    pid_file=$(_upgrade_nginx_pid_file) \
+        || die "Cannot determine the active Nginx PID file."
+    old_pid=$(_upgrade_nginx_master_pid) \
+        || die "Cannot determine the active Nginx master PID."
+
     backup_root=$(_upgrade_backup_root nginx)
     backup_bin="${backup_root}/nginx"
-    cp -a /usr/local/nginx/sbin/nginx "$backup_bin" \
+    cp -a "$live_bin" "$backup_bin" \
         || die "Cannot back up the current Nginx binary."
     _upgrade_save_version_state "$backup_root"
     _upgrade_backup_nginx_runtime_libs "$backup_root"
     _upgrade_backup_config /usr/local/nginx/conf "${backup_root}/nginx-conf"
     _upgrade_backup_config /etc/systemd/system/nginx.service "${backup_root}/nginx.service"
     _upgrade_backup_config /etc/systemd/system/nginx.service.d "${backup_root}/nginx.service.d"
-    if ! ( install_nginx upgrade ); then
-        cp -a "$backup_bin" /usr/local/nginx/sbin/nginx
-        _upgrade_restore_version_state "$backup_root"
-        _upgrade_restore_nginx_runtime_libs "$backup_root"
-        if /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1 \
-            && systemctl restart nginx \
-            && systemctl is-active --quiet nginx; then
-            _upgrade_mark_backup "$backup_root" rolled-back
-            _upgrade_rollback_ok Nginx "$backup_bin"
-        else
-            _upgrade_mark_backup "$backup_root" rollback-failed
-            _upgrade_rollback_failed Nginx "$backup_bin"
-        fi
-        return 1
+    active_manifest="${backup_root}/nginx-active-config-files"
+    if ! "$live_bin" -T -p /usr/local/nginx/ -c conf/nginx.conf 2>&1 \
+        | awk '/^# configuration file / {
+            file = $0
+            sub(/^# configuration file /, "", file)
+            sub(/:$/, "", file)
+            print file
+        }' > "$active_manifest" || [[ ! -s "$active_manifest" ]]; then
+        _upgrade_mark_backup "$backup_root" rolled-back
+        die "Cannot inventory active Nginx configuration files; no binary was changed."
     fi
-    if ! _upgrade_assert_config_unchanged "${backup_root}/nginx-conf" /usr/local/nginx/conf \
+    if ! _upgrade_nginx_migrate_redundant_ssl_on /usr/local/nginx/conf "$active_manifest"; then
+        _upgrade_restore_config_tree "${backup_root}/nginx-conf" /usr/local/nginx/conf || true
+        _upgrade_mark_backup "$backup_root" rolled-back
+        die "Nginx legacy SSL configuration cannot be migrated safely; no binary was changed."
+    fi
+    active_config="${backup_root}/nginx-conf-active"
+    _upgrade_backup_config /usr/local/nginx/conf "$active_config"
+
+
+    if ( install_nginx upgrade ) \
+        && _upgrade_assert_config_unchanged "$active_config" /usr/local/nginx/conf \
             Nginx "${backup_root}/nginx-config.diff" \
-        || ! _upgrade_assert_config_unchanged "${backup_root}/nginx.service" /etc/systemd/system/nginx.service \
+        && _upgrade_assert_config_unchanged "${backup_root}/nginx.service" /etc/systemd/system/nginx.service \
             Nginx-systemd "${backup_root}/nginx-systemd.diff" \
-        || ! _upgrade_assert_config_unchanged "${backup_root}/nginx.service.d" /etc/systemd/system/nginx.service.d \
+        && _upgrade_assert_config_unchanged "${backup_root}/nginx.service.d" /etc/systemd/system/nginx.service.d \
             Nginx-systemd-overrides "${backup_root}/nginx-systemd-overrides.diff" \
-        || ! /usr/local/nginx/sbin/nginx -t || ! systemctl restart nginx; then
-        log_err "Nginx validation/restart failed; restoring previous binary."
-        cp -a "$backup_bin" /usr/local/nginx/sbin/nginx
-        _upgrade_restore_version_state "$backup_root"
-        _upgrade_restore_nginx_runtime_libs "$backup_root"
-        if /usr/local/nginx/sbin/nginx -t >/dev/null 2>&1 \
-            && systemctl restart nginx \
-            && systemctl is-active --quiet nginx; then
-            _upgrade_mark_backup "$backup_root" rolled-back
-            _upgrade_rollback_ok Nginx "$backup_bin"
-        else
-            _upgrade_mark_backup "$backup_root" rollback-failed
-            _upgrade_rollback_failed Nginx "$backup_bin"
+        && "$candidate" -t -p /usr/local/nginx/ -c conf/nginx.conf; then
+        if mv "$live_bin" "$old_live"; then
+            activated=1
+            if mv "$candidate" "$live_bin" \
+                && kill -USR2 "$old_pid" \
+                && new_pid=$(_upgrade_wait_for_nginx_new_master "$pid_file" "$old_pid") \
+                && [[ "$("$live_bin" -v 2>&1)" = "nginx version: nginx/${NGINX_VER}" ]] \
+                && kill -0 "$new_pid" 2>/dev/null \
+                && "$live_bin" -t -p /usr/local/nginx/ -c conf/nginx.conf; then
+                kill -WINCH "$old_pid" && old_workers_stopped=1
+                sleep 2
+                if kill -0 "$new_pid" 2>/dev/null \
+                    && "$live_bin" -t -p /usr/local/nginx/ -c conf/nginx.conf \
+                    && kill -QUIT "$old_pid" \
+                    && _upgrade_wait_for_process_exit "$old_pid" \
+                    && kill -0 "$new_pid" 2>/dev/null; then
+                    rm -f -- "$old_live"
+                    ln -sf "$live_bin" /usr/bin/nginx
+                    record_installed_version NGINX "$NGINX_VER"
+                    if [[ "${Enable_Nginx_Openssl}" = y ]]; then
+                        record_installed_version OPENSSL "$OPENSSL_TARGET_LABEL"
+                    fi
+                    [[ "${Memory_Allocator}" = jemalloc ]] \
+                        && record_installed_version JEMALLOC "$JEMALLOC_VER"
+                    [[ "${Enable_Nginx_Lua}" = y ]] && {
+                        record_installed_version LUAJIT "$LUAJIT_VER"
+                        record_installed_version LUA_NGINX_MODULE "$LUA_NGINX_MODULE_VER"
+                        record_installed_version NGX_DEVEL_KIT "$NGX_DEVEL_KIT_VER"
+                    }
+                    _upgrade_mark_backup "$backup_root" completed
+                    log_ok "Nginx hot upgrade deployed without closing listening sockets. Previous binary: ${backup_bin}"
+                    return 0
+                fi
+            fi
         fi
-        return 1
     fi
-    _upgrade_mark_backup "$backup_root" completed
-    log_ok "Nginx upgrade deployed. Previous binary: ${backup_bin}"
+
+    log_err "Nginx hot upgrade failed; restoring the previous binary and master."
+    _upgrade_restore_config_tree "${backup_root}/nginx-conf" /usr/local/nginx/conf \
+        || log_err "Cannot restore the previous Nginx configuration tree."
+    if [[ $activated -eq 1 ]]; then
+        if [[ -n "$new_pid" ]]; then
+            kill -QUIT "$new_pid" 2>/dev/null || true
+            _upgrade_wait_for_process_exit "$new_pid" || true
+        fi
+        if [[ $old_workers_stopped -eq 1 ]] && kill -0 "$old_pid" 2>/dev/null; then
+            kill -HUP "$old_pid" 2>/dev/null || true
+        fi
+        if [[ -e "$old_live" ]]; then
+            rm -f -- "$live_bin"
+            mv "$old_live" "$live_bin"
+        else
+            _upgrade_install_file_atomically "$backup_bin" "$live_bin" || true
+        fi
+    else
+        rm -f -- "$candidate"
+    fi
+    _upgrade_restore_version_state "$backup_root"
+    _upgrade_restore_nginx_runtime_libs "$backup_root"
+    if ! kill -0 "$old_pid" 2>/dev/null; then
+        "$live_bin" -p /usr/local/nginx/ -c conf/nginx.conf >/dev/null 2>&1 || true
+        old_pid=$(_upgrade_nginx_master_pid || true)
+    fi
+    if [[ "$old_pid" =~ ^[1-9][0-9]*$ ]] \
+        && kill -0 "$old_pid" 2>/dev/null \
+        && "$live_bin" -t -p /usr/local/nginx/ -c conf/nginx.conf >/dev/null 2>&1; then
+        _upgrade_mark_backup "$backup_root" rolled-back
+        _upgrade_rollback_ok Nginx "$backup_bin"
+    else
+        _upgrade_mark_backup "$backup_root" rollback-failed
+        _upgrade_rollback_failed Nginx "$backup_bin"
+    fi
+    return 1
 }
 
 _upgrade_php() {
-    local backup_root backup_php ext before_modules after_modules
-    local old_extension_dir new_extension_dir effective_extension_dir
+    local backup_root backup_php ext before_modules after_modules current_pid
+    local old_extension_dir new_extension_dir effective_extension_dir old_series target_series
+    local config_snapshot scan_snapshot deploy_state same_series=0
     local -a installed_extensions=()
+    unset PHP_DEPLOY_PREVIOUS
     PHP_INI_ROOT=$(_upgrade_php_config_root) \
         || die "Cannot determine active PHP configuration root."
     PHP_INI_SCAN_DIR=$(_upgrade_php_scan_dir) \
         || die "Cannot determine active PHP scan directory."
+    PHP_UPGRADE_CONFIGURE_OPTIONS=$(/usr/local/php/bin/php-config --configure-options 2>/dev/null) \
+        || die "Cannot inventory the active PHP configure options."
+    old_series=$(_upgrade_runtime_version php)
+    old_series="${old_series%.*}"
+    target_series="${PHP_VER%.*}"
+    [[ "$old_series" = "$target_series" ]] && same_series=1
+    PHP_UPGRADE_EXPECT_SAME_ABI="$same_series"
+
     backup_root=$(_upgrade_backup_root php)
     backup_php="${backup_root}/php"
+    config_snapshot="${backup_root}/php-config-root"
+    scan_snapshot="${backup_root}/php-scan-dir"
     before_modules="${backup_root}/php-modules.before"
     after_modules="${backup_root}/php-modules.after"
+    deploy_state="${backup_root}/php-deploy-previous"
+    PHP_DEPLOY_STATE_FILE="$deploy_state"
     cp -a /usr/local/php "$backup_php" \
         || die "Cannot back up the current PHP prefix."
+    _upgrade_backup_config "$PHP_INI_ROOT" "$config_snapshot"
+    _upgrade_backup_config "$PHP_INI_SCAN_DIR" "$scan_snapshot"
     _upgrade_backup_config /etc/systemd/system/php-fpm.service "${backup_root}/php-fpm.service"
     _upgrade_backup_config /etc/systemd/system/php-fpm.service.d "${backup_root}/php-fpm.service.d"
     _upgrade_save_version_state "$backup_root"
@@ -1268,9 +1704,11 @@ _upgrade_php() {
     [[ -n "$old_extension_dir" ]] \
         || die "Current effective PHP extension directory is empty."
 
-    for ext in redis imagick apcu swoole memcached imap; do
-        [[ -n "$(_upgrade_runtime_version "ext:${ext}")" ]] && installed_extensions+=("$ext")
-    done
+    if [[ $same_series -eq 0 ]]; then
+        for ext in redis imagick apcu swoole memcached imap; do
+            [[ -n "$(_upgrade_runtime_version "ext:${ext}")" ]] && installed_extensions+=("$ext")
+        done
+    fi
 
     if (
         install_php upgrade
@@ -1278,16 +1716,21 @@ _upgrade_php() {
             || die "Cannot determine the target compiled PHP extension directory."
         [[ -n "$new_extension_dir" ]] \
             || die "Target compiled PHP extension directory is empty."
-        _upgrade_migrate_php_extension_dir "$PHP_INI_ROOT" "$PHP_INI_SCAN_DIR" \
-            "$old_extension_dir" "$new_extension_dir" \
-            || die "Cannot migrate the effective PHP extension_dir directive for the target ABI."
-        effective_extension_dir=$(_upgrade_php_extension_dir /usr/local/php/bin/php effective) \
-            || die "Cannot verify the target effective PHP extension directory."
-        [[ "$effective_extension_dir" = "$new_extension_dir" ]] \
-            || die "Effective PHP extension directory did not migrate to the target ABI: ${effective_extension_dir:-empty}."
-        for ext in "${installed_extensions[@]}"; do
-            PHP_EXT_DIR='' install_extension "$ext" y
-        done
+        if [[ $same_series -eq 1 ]]; then
+            _upgrade_copy_php_extension_dir "$old_extension_dir" "$new_extension_dir" \
+                || die "Cannot preserve same-ABI PHP extensions in the target prefix."
+        else
+            _upgrade_migrate_php_extension_dir "$PHP_INI_ROOT" "$PHP_INI_SCAN_DIR" \
+                "$old_extension_dir" "$new_extension_dir" \
+                || die "Cannot migrate the effective PHP extension_dir directive for the target ABI."
+            effective_extension_dir=$(_upgrade_php_extension_dir /usr/local/php/bin/php effective) \
+                || die "Cannot verify the target effective PHP extension directory."
+            [[ "$effective_extension_dir" = "$new_extension_dir" ]] \
+                || die "Effective PHP extension directory did not migrate to the target ABI: ${effective_extension_dir:-empty}."
+            for ext in "${installed_extensions[@]}"; do
+                PHP_EXT_DIR='' install_extension "$ext" y
+            done
+        fi
     ); then
         new_extension_dir=$(_upgrade_php_extension_dir /usr/local/php/bin/php compiled) \
             || new_extension_dir=''
@@ -1296,9 +1739,13 @@ _upgrade_php() {
         _upgrade_php_modules > "$after_modules" \
             || log_err "Cannot inventory PHP modules after upgrade."
         chmod 0600 "$after_modules" 2>/dev/null || true
-        if _upgrade_write_config_diff "${backup_php}/etc" /usr/local/php/etc \
+        if _upgrade_write_config_diff "$config_snapshot" "$PHP_INI_ROOT" \
                 "${backup_root}/php-config.diff" \
-            && _upgrade_php_configs_preserved "${backup_php}/etc" /usr/local/php/etc \
+            && { [[ $same_series -eq 0 ]] \
+                || _upgrade_php_configs_preserved "$config_snapshot" "$PHP_INI_ROOT"; } \
+            && { [[ $same_series -eq 0 ]] \
+                || _upgrade_assert_config_unchanged "$scan_snapshot" "$PHP_INI_SCAN_DIR" \
+                    PHP-scan-dir "${backup_root}/php-scan-preservation.diff"; } \
             && _upgrade_assert_config_unchanged "${backup_root}/php-fpm.service" \
                 /etc/systemd/system/php-fpm.service PHP-FPM-systemd \
                 "${backup_root}/php-fpm-systemd.diff" \
@@ -1307,9 +1754,12 @@ _upgrade_php() {
                 "${backup_root}/php-fpm-systemd-overrides.diff" \
             && [[ -s "$after_modules" ]] \
             && _upgrade_php_modules_preserved "$before_modules" "$after_modules" \
-            && /usr/local/php/sbin/php-fpm -t -y /usr/local/php/etc/php-fpm.conf \
-            && systemctl start php-fpm \
-            && systemctl is-active --quiet php-fpm; then
+            && /usr/local/php/sbin/php-fpm -t -y "${PHP_INI_ROOT}/php-fpm.conf" \
+            && _upgrade_php_process_owned /usr/local/php/sbin/php-fpm; then
+            PHP_DEPLOY_PREVIOUS=$(cat "$deploy_state" 2>/dev/null || true)
+            rm -rf -- "${PHP_DEPLOY_PREVIOUS:-}"
+            rm -f -- "$deploy_state"
+            unset PHP_DEPLOY_PREVIOUS PHP_DEPLOY_STATE_FILE PHP_UPGRADE_CONFIGURE_OPTIONS PHP_UPGRADE_EXPECT_SAME_ABI
             unset PHP_UPGRADE_OLD_EXT_DIR PHP_UPGRADE_NEW_EXT_DIR
             _upgrade_mark_backup "$backup_root" completed
             log_ok "PHP upgrade deployed. Previous prefix: ${backup_php}; module inventory: ${after_modules}"
@@ -1318,19 +1768,32 @@ _upgrade_php() {
     fi
     unset PHP_UPGRADE_OLD_EXT_DIR PHP_UPGRADE_NEW_EXT_DIR
 
+    PHP_DEPLOY_PREVIOUS=$(cat "$deploy_state" 2>/dev/null || true)
     log_err "PHP upgrade failed; restoring previous prefix."
     systemctl stop php-fpm 2>/dev/null || true
+    current_pid=$(_php_fpm_master_pid || true)
+    if [[ "$current_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$current_pid" 2>/dev/null; then
+        kill -QUIT "$current_pid" 2>/dev/null || true
+        _php_fpm_wait_for_exit "$current_pid" || true
+    fi
     rm -rf /usr/local/php
-    mv "$backup_php" /usr/local/php
+    if [[ -n "${PHP_DEPLOY_PREVIOUS:-}" && -d "$PHP_DEPLOY_PREVIOUS" ]]; then
+        mv "$PHP_DEPLOY_PREVIOUS" /usr/local/php
+    else
+        cp -a "$backup_php" /usr/local/php
+    fi
+    _upgrade_restore_config_tree "$config_snapshot" "$PHP_INI_ROOT" || true
+    _upgrade_restore_config_tree "$scan_snapshot" "$PHP_INI_SCAN_DIR" || true
     _upgrade_restore_version_state "$backup_root"
     ln -sf /usr/local/php/bin/php /usr/bin/php
     ln -sf /usr/local/php/bin/phpize /usr/bin/phpize
     ln -sf /usr/local/php/bin/php-config /usr/bin/php-config
     ln -sf /usr/local/php/bin/pecl /usr/bin/pecl
     ln -sf /usr/local/php/sbin/php-fpm /usr/bin/php-fpm
-    if /usr/local/php/sbin/php-fpm -t -y /usr/local/php/etc/php-fpm.conf >/dev/null 2>&1 \
-        && systemctl start php-fpm \
-        && systemctl is-active --quiet php-fpm; then
+    unset PHP_DEPLOY_PREVIOUS PHP_DEPLOY_STATE_FILE PHP_UPGRADE_CONFIGURE_OPTIONS PHP_UPGRADE_EXPECT_SAME_ABI
+    if /usr/local/php/sbin/php-fpm -t -y "${PHP_INI_ROOT}/php-fpm.conf" >/dev/null 2>&1 \
+        && _start_php_fpm_candidate /usr/local/php "${PHP_INI_ROOT}/php-fpm.conf" php-fpm \
+        && _upgrade_php_process_owned /usr/local/php/sbin/php-fpm; then
         _upgrade_mark_backup "$backup_root" rolled-back
         _upgrade_rollback_ok PHP "$backup_php"
     else
@@ -1793,6 +2256,9 @@ _upgrade_exit_cleanup() {
 
 upgrade_apply() {
     [[ $# -gt 0 ]] || die_code "$EX_USAGE" "Select at least one component or 'outdated'. Run: lnmp upgrade plan"
+    LNMP_UPGRADE_MODE=1
+    _upgrade_select_php_target
+
 
     local requested component status selected_words=' '
     local -a selected=()
@@ -1818,16 +2284,24 @@ upgrade_apply() {
         log_ok "No installed component is eligible for automatic upgrade. REVIEW items require explicit selection."
         return 0
     }
+    LNMP_UPGRADE_OS_SAFE_COMPONENTS=1
     for component in "${selected[@]}"; do
         status=$(_upgrade_component_status "$component")
         case "$status" in
             MISSING) die_code "$EX_USAGE" "${component} is not installed; upgrade will not install optional components." ;;
             AHEAD) die_code "$EX_USAGE" "${component} is newer than the pinned target; refusing a downgrade." ;;
         esac
+        case "$component" in
+            nginx|php) ;;
+            *) LNMP_UPGRADE_OS_SAFE_COMPONENTS=0 ;;
+        esac
     done
 
-    if [[ ${#selected[@]} -eq 1 && "${selected[0]}" = nginx ]]; then
-        INSTALL_TARGET=nginx
+    if [[ ${#selected[@]} -eq 1 ]]; then
+        case "${selected[0]}" in
+            nginx|php) INSTALL_TARGET="${selected[0]}" ;;
+            *) INSTALL_TARGET=upgrade ;;
+        esac
     else
         INSTALL_TARGET=upgrade
     fi
