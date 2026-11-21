@@ -425,8 +425,7 @@ _upgrade_nginx_migrate_redundant_ssl_on "$SSL_SAFE_DIR" \
 if grep -Eq '^[[:space:]]*ssl[[:space:]]+(on|off)' "${SSL_SAFE_DIR}/site.conf"; then
     fail 'legacy Nginx SSL directive must be removed'
 fi
-assert_eq 640 "$(stat -f '%Lp' "${SSL_SAFE_DIR}/site.conf" 2>/dev/null \
-    || stat -c '%a' "${SSL_SAFE_DIR}/site.conf")" \
+assert_eq 640 "$(_upgrade_file_metadata "${SSL_SAFE_DIR}/site.conf" | cut -d: -f1)" \
     'Nginx SSL migration file mode'
 
 SSL_UNSAFE_DIR="${TEST_TMP}/nginx-ssl-unsafe"
@@ -475,6 +474,7 @@ check_os_support >/dev/null
 if (LNMP_UPGRADE_MODE=0; check_os_support) >/dev/null 2>&1; then
     fail 'unsupported OS override must not permit a fresh installation'
 fi
+# shellcheck disable=SC2030  # The rejected value is intentionally isolated from the parent test shell.
 if (LNMP_UPGRADE_OS_SAFE_COMPONENTS=0; check_os_support) >/dev/null 2>&1; then
     fail 'unsupported OS override must not permit non-Nginx/PHP upgrade components'
 fi
@@ -684,7 +684,11 @@ _upgrade_component_status() { printf '%s' "${TEST_STATUS[$1]}"; }
 check_root() { return 0; }
 _upgrade_init_log() { LOG_FILE="${TEST_TMP}/apply.log"; : > "$LOG_FILE"; }
 _upgrade_require_commands() { return 0; }
-_upgrade_load_build_libraries() { LOADED_TARGET="$INSTALL_TARGET"; }
+_upgrade_load_build_libraries() {
+    LOADED_TARGET="$INSTALL_TARGET"
+    # shellcheck disable=SC2031  # The negative gate test mutates this variable only in an isolated subshell.
+    LOADED_OS_SAFE="$LNMP_UPGRADE_OS_SAFE_COMPONENTS"
+}
 upgrade_plan() { return 0; }
 _upgrade_preflight_components() { return 0; }
 LNMP_UPGRADE_CLEAN_SOURCES=n
@@ -707,7 +711,7 @@ assert_eq 'php' "$LOADED_TARGET" 'PHP-only upgrade architecture target'
 APPLIED=()
 upgrade_apply nginx php >/dev/null
 assert_eq 'nginx php' "${APPLIED[*]}" 'combined Nginx/PHP selection'
-assert_eq 1 "$LNMP_UPGRADE_OS_SAFE_COMPONENTS" \
+assert_eq 1 "$LOADED_OS_SAFE" \
     'combined Nginx/PHP selection remains architecture and legacy-OS safe'
 
 set +e

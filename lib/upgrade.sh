@@ -815,7 +815,8 @@ _upgrade_preflight_components() {
                     || die_code "$EX_UNAVAILABLE" "PHP-FPM process ownership is unsafe; no binaries were changed."
                 config_root=$(_upgrade_php_config_root || true)
                 [[ -n "$config_root" ]] \
-                    && /usr/local/php/sbin/php-fpm -t -y "${config_root}/php-fpm.conf" >/dev/null 2>&1 \
+                    || die_code "$EX_UNAVAILABLE" "Cannot determine the active PHP configuration root; no binaries were changed."
+                /usr/local/php/sbin/php-fpm -t -y "${config_root}/php-fpm.conf" >/dev/null 2>&1 \
                     || die_code "$EX_UNAVAILABLE" "Current PHP-FPM configuration is invalid; no binaries were changed."
                 _upgrade_php_layout_supported \
                     || die_code "$EX_USAGE" "Unsupported PHP configuration layout; no binaries were changed."
@@ -1466,6 +1467,7 @@ _upgrade_nginx_migrate_redundant_ssl_on() {
         find "$conf_dir" \( -type f -o -type l \) -print > "$sources"
     fi
 
+    # shellcheck disable=SC2094  # Error branches unlink temp pathnames; the active read descriptor remains valid.
     while IFS= read -r file || [[ -n "$file" ]]; do
         [[ -f "$file" || -L "$file" ]] || continue
         grep -Eq '^[[:space:]]*ssl[[:space:]]+(on|off)[[:space:]]*;([[:space:]]*#.*)?[[:space:]]*$' "$file" \
@@ -1495,6 +1497,7 @@ _upgrade_nginx_migrate_redundant_ssl_on() {
         printf '%s\n' "$file" >> "$candidates"
     done < "$sources"
 
+    # shellcheck disable=SC2094  # Error branches unlink temp pathnames; the active read descriptor remains valid.
     while IFS= read -r file || [[ -n "$file" ]]; do
         [[ -n "$file" ]] || continue
         tmp="${file}.lnmp-ssl-on.$$"
@@ -1679,7 +1682,6 @@ _upgrade_php() {
     old_series="${old_series%.*}"
     target_series="${PHP_VER%.*}"
     [[ "$old_series" = "$target_series" ]] && same_series=1
-    PHP_UPGRADE_EXPECT_SAME_ABI="$same_series"
 
     backup_root=$(_upgrade_backup_root php)
     backup_php="${backup_root}/php"
@@ -1759,7 +1761,7 @@ _upgrade_php() {
             PHP_DEPLOY_PREVIOUS=$(cat "$deploy_state" 2>/dev/null || true)
             rm -rf -- "${PHP_DEPLOY_PREVIOUS:-}"
             rm -f -- "$deploy_state"
-            unset PHP_DEPLOY_PREVIOUS PHP_DEPLOY_STATE_FILE PHP_UPGRADE_CONFIGURE_OPTIONS PHP_UPGRADE_EXPECT_SAME_ABI
+            unset PHP_DEPLOY_PREVIOUS PHP_DEPLOY_STATE_FILE PHP_UPGRADE_CONFIGURE_OPTIONS
             unset PHP_UPGRADE_OLD_EXT_DIR PHP_UPGRADE_NEW_EXT_DIR
             _upgrade_mark_backup "$backup_root" completed
             log_ok "PHP upgrade deployed. Previous prefix: ${backup_php}; module inventory: ${after_modules}"
@@ -1790,7 +1792,7 @@ _upgrade_php() {
     ln -sf /usr/local/php/bin/php-config /usr/bin/php-config
     ln -sf /usr/local/php/bin/pecl /usr/bin/pecl
     ln -sf /usr/local/php/sbin/php-fpm /usr/bin/php-fpm
-    unset PHP_DEPLOY_PREVIOUS PHP_DEPLOY_STATE_FILE PHP_UPGRADE_CONFIGURE_OPTIONS PHP_UPGRADE_EXPECT_SAME_ABI
+    unset PHP_DEPLOY_PREVIOUS PHP_DEPLOY_STATE_FILE PHP_UPGRADE_CONFIGURE_OPTIONS
     if /usr/local/php/sbin/php-fpm -t -y "${PHP_INI_ROOT}/php-fpm.conf" >/dev/null 2>&1 \
         && _start_php_fpm_candidate /usr/local/php "${PHP_INI_ROOT}/php-fpm.conf" php-fpm \
         && _upgrade_php_process_owned /usr/local/php/sbin/php-fpm; then

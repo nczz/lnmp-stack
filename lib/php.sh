@@ -57,13 +57,15 @@ _start_php_fpm_candidate() {
 _deploy_php_candidate() {
     local candidate="$1" live_prefix="$2" service="${3:-php-fpm}"
     local config="${4:-${PHP_INI_ROOT:-/usr/local/php/etc}/php-fpm.conf}"
-    local previous old_pid
+    [[ -n "${PHP_DEPLOY_STATE_FILE:-}" ]] || return 1
     [[ -d "$candidate" && -d "$live_prefix" && -f "$config" ]] || return 1
     old_pid=$(_php_fpm_master_pid) || return 1
     previous=$(mktemp -d "${live_prefix}.previous.$(date +%Y%m%d%H%M%S)-XXXXXX") \
         || return 1
     rmdir "$previous" || return 1
 
+    printf '%s\n' "$previous" > "$PHP_DEPLOY_STATE_FILE" || return 1
+    chmod 0600 "$PHP_DEPLOY_STATE_FILE" || return 1
     systemctl stop "$service" 2>/dev/null || true
     if kill -0 "$old_pid" 2>/dev/null; then
         kill -QUIT "$old_pid" || return 1
@@ -84,11 +86,7 @@ _deploy_php_candidate() {
         _start_php_fpm_candidate "$live_prefix" "$config" "$service" 2>/dev/null || true
         return 1
     fi
-    PHP_DEPLOY_PREVIOUS="$previous"
-    if [[ -n "${PHP_DEPLOY_STATE_FILE:-}" ]]; then
-        printf '%s\n' "$previous" > "$PHP_DEPLOY_STATE_FILE" || return 1
-        chmod 0600 "$PHP_DEPLOY_STATE_FILE" || return 1
-    fi
+    return 0
 }
 
 install_php() {

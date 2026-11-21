@@ -2,6 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
+## v1.7.20 — 2026-11-21
+
+### Upgrade State and CI Portability
+
+- Persist the PHP previous-prefix rollback path before stopping PHP-FPM, so a state-file failure cannot strand an activated candidate without recoverable deployment state.
+- Make Nginx configuration-metadata assertions portable across GNU and BSD `stat`, and keep the full warning-clean ShellCheck gate green across the Ubuntu 22.04, 24.04, and 26.04 matrix.
+
 ## v1.7.19 — 2026-11-21
 
 ### Heterogeneous Legacy-Fleet Upgrades
